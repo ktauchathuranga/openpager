@@ -376,6 +376,14 @@ void send_word_precise(uint32_t word) {
 }
 
 void transmit_pocsag(uint32_t ric, uint8_t func, String msg, uint16_t baud, bool alpha) {
+    static uint16_t last_baud = 0;
+    
+    // Auto-reinit CC1101 if baud rate changes
+    if (baud != last_baud) {
+        cc1101_init(433.920, baud);
+        last_baud = baud;
+    }
+
     Serial.println("\n========================================");
     Serial.print("RIC: "); Serial.println(ric);
     Serial.print("Function: "); Serial.println(func);
@@ -504,11 +512,24 @@ void setup() {
 }
 
 void loop() {
-    // Alphanumeric test
-    transmit_pocsag(1234567, 3, "ashen ashen its ashen ane", 2400, true);
-    delay(5000);
-    
-    // Numeric test
-    transmit_pocsag(1234567, 0, "0123456789*-()", 2400, false);
-    delay(5000);
+    // --- 512 Baud Examples ---
+    Serial.println("\n>>> Testing 512 Baud <<<");
+    transmit_pocsag(1234567, 3, "Alpha 512 Baud Test", 512, true);
+    delay(4000);
+    transmit_pocsag(1234567, 0, "512-512-512", 512, false);
+    delay(4000);
+
+    // --- 1200 Baud Examples ---
+    Serial.println("\n>>> Testing 1200 Baud <<<");
+    transmit_pocsag(1234567, 3, "Alpha 1200 Baud Test Word Longer", 1200, true);
+    delay(4000);
+    transmit_pocsag(1234567, 0, "1200-1200", 1200, false);
+    delay(4000);
+
+    // --- 2400 Baud Examples ---
+    Serial.println("\n>>> Testing 2400 Baud <<<");
+    transmit_pocsag(1234567, 3, "Alpha 2400 Baud High Speed Test", 2400, true);
+    delay(4000);
+    transmit_pocsag(1234567, 0, "2400-9999", 2400, false);
+    delay(8000); // Longer delay before next cycle
 }
