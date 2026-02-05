@@ -205,10 +205,58 @@ uint8_t reverse_bits_8(uint8_t x) {
     return x;
 }
 
-// Reverse lower N bits (matches pager-tx reverse_bits_n)
-uint8_t reverse_7bit(uint8_t x) {
+// Reverse lower N bits
+uint8_t reverse_nbit(uint8_t x, uint8_t n) {
     uint8_t reversed = reverse_bits_8(x);
-    return reversed >> 1;  // Shift by (8 - 7) = 1
+    return reversed >> (8 - n);
+}
+
+// BCD encoding for numeric mode
+uint8_t char_to_bcd(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    switch (c) {
+        case '*': case 'U': case 'u': return 0x0B;
+        case ' ': return 0x0C;
+        case '-': return 0x0D;
+        case ')': case ']': return 0x0E;
+        case '(': case '[': return 0x0F;
+    }
+    return 0x0C; // Default to space
+}
+
+void encode_numeric_message(String msg, uint32_t *codewords, uint16_t *count) {
+    uint16_t cw_index = 0;
+    uint32_t current_word = 0;
+    uint8_t digit_count = 0;
+
+    for (uint16_t i = 0; i < msg.length(); i++) {
+        uint8_t bcd = char_to_bcd(msg.charAt(i));
+        uint8_t reversed_bcd = reverse_nbit(bcd, 4);
+
+        current_word = (current_word << 4) | (reversed_bcd & 0x0F);
+        digit_count++;
+
+        if (digit_count == 5) {
+            uint32_t raw = (1UL << 31) | (current_word << 11);
+            codewords[cw_index++] = bch_encode(raw);
+            current_word = 0;
+            digit_count = 0;
+            if (cw_index >= 100) { *count = cw_index; return; }
+        }
+    }
+
+    // Pad remaining digits with reversed spaces (0xC reversed = 0x3)
+    if (digit_count > 0) {
+        while (digit_count < 5) {
+            uint8_t reversed_space = reverse_nbit(0x0C, 4); // 0x3
+            current_word = (current_word << 4) | reversed_space;
+            digit_count++;
+        }
+        uint32_t raw = (1UL << 31) | (current_word << 11);
+        codewords[cw_index++] = bch_encode(raw);
+    }
+
+    *count = cw_index;
 }
 
 // BCH(31,21) encoder - MATCHES pager-tx exactly
@@ -256,7 +304,7 @@ void encode_message(String msg, uint32_t *codewords, uint16_t *count) {
     
     // Process message characters (NOT including EOT yet)
     for (uint16_t i = 0; i < msg.length(); i++) {
-        uint8_t c = reverse_7bit((uint8_t)msg.charAt(i));
+        uint8_t c = reverse_nbit((uint8_t)msg.charAt(i), 7);
         buffer = (buffer << 7) | (c & 0x7F);
         bits_in_buffer += 7;
         
@@ -271,7 +319,7 @@ void encode_message(String msg, uint32_t *codewords, uint16_t *count) {
     }
     
     // Add EOT (0x04) AFTER the message loop (matching pager-tx)
-    uint8_t eot_reversed = reverse_7bit(0x04);
+    uint8_t eot_reversed = reverse_nbit(0x04, 7);
     buffer = (buffer << 7) | (eot_reversed & 0x7F);
     bits_in_buffer += 7;
     
@@ -327,11 +375,12 @@ void send_word_precise(uint32_t word) {
     ESP.wdtFeed();
 }
 
-void transmit_pocsag(uint32_t ric, uint8_t func, String msg, uint16_t baud) {
+void transmit_pocsag(uint32_t ric, uint8_t func, String msg, uint16_t baud, bool alpha) {
     Serial.println("\n========================================");
     Serial.print("RIC: "); Serial.println(ric);
     Serial.print("Function: "); Serial.println(func);
     Serial.print("Message: "); Serial.println(msg);
+    Serial.print("Mode: "); Serial.println(alpha ? "Alpha" : "Numeric");
     Serial.print("Baud: "); Serial.println(baud);
     
     uint32_t bit_delay = 1000000 / baud;
@@ -344,7 +393,11 @@ void transmit_pocsag(uint32_t ric, uint8_t func, String msg, uint16_t baud) {
     
     uint32_t msg_cw[100];
     uint16_t msg_count = 0;
-    encode_message(msg, msg_cw, &msg_count);
+    if (alpha) {
+        encode_message(msg, msg_cw, &msg_count);
+    } else {
+        encode_numeric_message(msg, msg_cw, &msg_count);
+    }
     Serial.print("Message CWs: ");
     Serial.println(msg_count);
     
@@ -451,7 +504,11 @@ void setup() {
 }
 
 void loop() {
-    transmit_pocsag(1234567, 3, "ashen ashen its ashen ane", 2400);
+    // Alphanumeric test
+    transmit_pocsag(1234567, 3, "ashen ashen its ashen ane", 2400, true);
+    delay(5000);
     
-    delay(3000);
+    // Numeric test
+    transmit_pocsag(1234567, 0, "0123456789*-()", 2400, false);
+    delay(5000);
 }
