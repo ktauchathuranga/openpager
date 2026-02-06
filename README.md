@@ -1,19 +1,19 @@
 # OpenPager
 
-OpenPager is a high-precision POCSAG (pager) transmitter library designed for the ESP8266 microcontroller and the CC1101 radio transceiver. It provides a robust implementation of the POCSAG protocol, supporting multiple baud rates and encoding modes with a focus on timing accuracy to ensure reliable decoding by standard pager receivers and software-defined radio (SDR) decoders.
+OpenPager is a high-precision POCSAG (pager) transmitter library for Arduino-compatible microcontrollers (ESP8266, ESP32, etc.) and the TI CC1101 radio transceiver. It provides a robust implementation of the POCSAG protocol, supporting multiple baud rates and encoding modes with a focus on timing accuracy to ensure reliable decoding by standard pager receivers and software-defined radio (SDR) decoders.
 
 ## Features
 
 - Supported Baud Rates: 512, 1200, and 2400 baud.
 - Message Modes: Supports both Alphanumeric (7-bit ASCII) and Numeric (4-bit BCD) encoding.
 - Timing Precision: Implements a sub-microsecond timing system using absolute target tracking to eliminate cumulative bit-drift, which is critical for long messages at high baud rates.
-- Hardware Compatibility: Optimized for ESP8266 and CC1101.
+- Hardware Compatibility: Optimized for ESP8266, ESP32, and other Arduino-compatible boards.
 - Automatic Calibration: Automatically reconfigures CC1101 registers when baud rates or frequencies are changed.
 - Configurable Polarity: Supports FSK inversion to match different receiver requirements.
 
 ## Hardware Requirements
 
-- Microcontroller: ESP8266 (e.g., NodeMCU, Wemos D1 Mini).
+- Microcontroller: ESP8266 (e.g., NodeMCU, Wemos D1 Mini), ESP32, or other Arduino-compatible boards.
 - Radio Module: TI CC1101 (commonly found on 433MHz or 868/915MHz modules).
 - Connection: SPI interface.
 
@@ -99,7 +99,7 @@ void loop() {
 ## Technical Background
 
 ### Timing Precision
-In asynchronous serial mode, the CC1101 modulator samples the input pin at 8 times the configured internal data rate. Any jitter or drift in the bit-banging process on the ESP8266 can lead to decoding failures, especially as message length increases. OpenPager calculates the absolute target time for every bit relative to the start of the transmission using floating-point math, ensuring zero cumulative error over the entire batch sequence.
+In asynchronous serial mode, the CC1101 modulator samples the input pin at 8 times the configured internal data rate. Any jitter or drift in the bit-banging process can lead to decoding failures, especially as message length increases. OpenPager calculates the absolute target time for every bit relative to the start of the transmission using high-precision timing, ensuring zero cumulative error over the entire batch sequence.
 
 ### BCH Error Correction
 The library implements the BCH(31,21) error correction algorithm required by the POCSAG standard. It calculates the 10 parity bits and the final even parity bit for every address and message codeword.

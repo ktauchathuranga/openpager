@@ -212,5 +212,7 @@ void OpenPager::sendWord(uint32_t word) {
     noInterrupts();
     for (int i = 31; i >= 0; i--) sendBit((word >> i) & 1);
     interrupts();
-    ESP.wdtFeed();
+#if defined(ESP8266) || defined(ESP32)
+    yield();
+#endif
 }
