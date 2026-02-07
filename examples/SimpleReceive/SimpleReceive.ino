@@ -1,26 +1,8 @@
 #include <OpenPager.h>
 
 // CSN = Pin 15 (D8 on ESP8266), GDO0 = Pin 5 (D1)
+// Adjust pins for your board!
 OpenPager pager(15, 5);
-
-// Debug: print raw codewords in batch
-void debugProcessBatch(uint32_t* codewords, uint8_t count) {
-    Serial.println("\n--- RAW BATCH ---");
-    for (uint8_t i = 0; i < count; i++) {
-        uint32_t cw = codewords[i];
-        bool isIdle = (cw == 0x7A89C197);
-        bool isSync = (cw == 0x7CD215D8);
-        bool isMsg = (cw >> 31) & 1;
-        bool bchOk = pager.bchCheck(cw);
-        
-        Serial.printf("[%2d] 0x%08lX %s %s\n", i, cw, 
-                      isIdle ? "(IDLE)" : 
-                      isSync ? "(SYNC)" : 
-                      isMsg ? "(MSG )" : "(ADDR)",
-                      bchOk ? "OK" : "FAIL");
-    }
-    Serial.println("-----------------\n");
-}
 
 // Callback for received messages
 void onMessage(PocsagMessage msg) {
@@ -33,34 +15,39 @@ void onMessage(PocsagMessage msg) {
 }
 
 void setup() {
-    Serial.begin(115200);
+    Serial.begin(115200);   
     delay(1000);
     
     Serial.println("================================");
-    Serial.println("  POCSAG RX DEBUG MODE          ");
+    Serial.println("  OPENPAGER RX DEMO             ");
     Serial.println("================================");
     
+    // Initialize Radio
     float freq = 433.000;
     uint16_t baud = 512;
     
     pager.begin(freq, baud);
+    
+    // Register callback
     pager.setCallback(onMessage);
-    pager.setDebugCallback(debugProcessBatch);
+    
+    // Start Listening
     pager.startReceive(baud);
     
-    Serial.printf("RX: %.3f MHz @ %d baud\n\n", freq, baud);
+    Serial.printf("Listening on %.3f MHz @ %d baud...\n\n", freq, baud);
 }
 
 void loop() {
+    // You must call loop() frequently to process radio data!
     pager.loop();
     
+    // Print stats every 5 seconds
     static uint32_t lastStats = 0;
-    if (millis() - lastStats > 3000) {
+    if (millis() - lastStats > 5000) {
         lastStats = millis();
-        
-        Serial.printf("RSSI:%4d | Samples:%lu | Syncs:%lu | Batches:%lu\n",
+        Serial.printf("RSSI:%d dBm | Edges:%lu | Syncs:%lu | Batches:%lu\n",
                       pager.getRSSI(),
-                      pager.debugSampleCount,
+                      pager.debugSampleCount, 
                       pager.debugSyncCount,
                       pager.debugBatchCount);
     }

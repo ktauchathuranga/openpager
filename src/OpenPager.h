@@ -51,6 +51,7 @@ public:
     void setCallback(PocsagCallback cb);
     int16_t getRSSI();
     bool bchCheck(uint32_t codeword);
+    uint32_t bchRepair(uint32_t codeword);
     
     // Must call this in loop() for RX to work
     void loop();

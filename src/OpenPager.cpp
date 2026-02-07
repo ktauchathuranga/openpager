@@ -158,37 +158,26 @@ void OpenPager::loop() {
 }
 
 void OpenPager::processSample(bool bit) {
-    // Shift bit into register
+    // User inversion setting (apply to raw bit)
+    if (_invert) bit = !bit;
+    
+    // Shift raw bit into register (do NOT apply auto-inversion here)
     _rx_shift_reg = (_rx_shift_reg << 1) | (bit ? 1 : 0);
     _rx_bit_count++;
     
     if (!_rx_synced) {
-        // Preamble detection - look for alternating pattern
-        static bool lastBit = false;
-        if (bit != lastBit) {
-            _rx_preamble_ones++;
-            if (_rx_preamble_ones > 32) {
-                debugPreambleCount++;
-            }
-        } else {
-            _rx_preamble_ones = 0;
-        }
-        lastBit = bit;
-        
-        // Check for sync word (both polarities)
+        // Search for sync word
         if (checkSyncWord()) {
             _rx_synced = true;
-            _rx_bit_count = 0;
+            _rx_bit_count = 0; // align
             _rx_cw_index = 0;
             debugSyncCount++;
         }
     } else {
         // Synced - collect 32-bit codewords
         if (_rx_bit_count == 32) {
-            uint32_t cw = _rx_shift_reg;
-            if (_rx_inverted) cw = ~cw;
-            
-            _rx_codewords[_rx_cw_index++] = cw;
+            _rx_codewords[_rx_cw_index] = _rx_shift_reg;
+            _rx_cw_index++;
             _rx_bit_count = 0;
             
             // Check if we got a full batch (16 codewords)
@@ -495,6 +484,20 @@ bool OpenPager::bchCheck(uint32_t cw) {
     return (bchEncode(cw) == cw);
 }
 
+// Try to correct 1 bit error
+uint32_t OpenPager::bchRepair(uint32_t cw) {
+    if (bchCheck(cw)) return cw;
+    
+    // Try flipping each of the 32 bits
+    for (int i = 0; i < 32; i++) {
+        uint32_t corrected = cw ^ (1UL << i);
+        if (bchCheck(corrected)) {
+            return corrected;
+        }
+    }
+    return 0; // Uncorrectable
+}
+
 char OpenPager::bcdToChar(uint8_t bcd) {
     // Reverse the 4-bit BCD
     bcd = ((bcd & 0x01) << 3) | ((bcd & 0x02) << 1) | 
@@ -521,42 +524,63 @@ void OpenPager::processBatch() {
     for (uint8_t i = 0; i < 16; i++) {
         uint32_t cw = _rx_codewords[i];
         
+        // Apply polarity inversion if detected
+        if (_rx_inverted) cw = ~cw;
+        
         // Skip idle codewords
         if (cw == POCSAG_IDLE_CODE) {
-            // If we were in a message, finalize it
-            if (_rx_in_message && _rx_msg_cw_count > 0) {
+            // If we were in a message, finalize it (even if count=0 for Tone Only)
+            if (_rx_in_message) {
+                // Serial.println("RX: IDLE -> FINALIZE");
                 finalizeMessage();
             }
             continue;
         }
         
-        // Validate BCH
-        if (!bchCheck(cw)) continue;
+        // Check BCH (Valid or 1-bit correctable)
+        bool bchOk = bchCheck(cw);
+        if (!bchOk) {
+            uint32_t corrected = bchRepair(cw);
+            if (corrected != 0) {
+                cw = corrected;
+                bchOk = true;
+            }
+        }
+        
+        // Skip invalid codewords
+        if (!bchOk) {
+            continue;
+        }
         
         bool isMessage = (cw >> 31) & 1;
         
         if (!isMessage) {
-            // Address codeword - finalize any previous message
-            if (_rx_in_message && _rx_msg_cw_count > 0) {
+            // Address detected
+            // Finalize previous message if exists
+            if (_rx_in_message) {
                 finalizeMessage();
             }
             
-            // Decode address
-            uint8_t frame = i / 2;
-            uint32_t addrBits = (cw >> 13) & 0x3FFFF;
-            _rx_current_ric = (addrBits << 3) | frame;
-            _rx_current_func = (cw >> 11) & 0x03;
+            // Mask address (18 bits)
+            uint32_t address = (cw >> 13) & 0x7FFFF;
+            // Function bits
+            uint8_t func = (cw >> 11) & 0x03;
+            // Serial.printf("RX: ADDR %lu FRAME %d FUNC %d\n", address, i/2, func);
+
+            _rx_current_ric = address;
+            _rx_current_func = func;
             _rx_in_message = true;
             _rx_msg_cw_count = 0;
             
         } else if (_rx_in_message) {
             // Message codeword - accumulate
-            if (_rx_msg_cw_count < 40) {
-                _rx_msg_cws[_rx_msg_cw_count++] = cw;
-                _rx_last_msg_activity_us = micros();
+            if (_rx_msg_cw_count < 32) {
+                 // Serial.printf("RX: MSG CW %08X\n", cw);
+                 _rx_msg_cws[_rx_msg_cw_count++] = cw;
             }
         }
     }
+    _rx_last_msg_activity_us = micros();
     
     // NOTE: Do NOT finalize at batch end!
     // Message may continue in next batch.
@@ -564,16 +588,34 @@ void OpenPager::processBatch() {
 }
 
 void OpenPager::finalizeMessage() {
-    if (_rx_msg_cw_count == 0) {
-        _rx_in_message = false;
-        return;
-    }
+    // Handle Tone Only (count 0) or Payload
+    PocsagMessage msg;
+    msg.ric = _rx_current_ric; // Base address
+    // Convert to actual RIC (Base * 8 + Function) is convention? 
+    // Usually RIC is Base*8 + Frame. Function is separate.
+    // Library provides raw Base RIC.
     
-    // Determine if numeric or alpha based on function
-    if (_rx_current_func == 0 || _rx_current_func == 1) {
-        decodeNumericMessage();
-    } else {
-        decodeAlphaMessage();
+    msg.func = _rx_current_func;
+    msg.isNumeric = (_rx_current_func == 0 || _rx_current_func == 1); // 0,1=Numeric usually, 3=Alpha
+    
+    // Handle Tone Only (count 0)
+    if (_rx_msg_cw_count == 0) {
+         PocsagMessage msg;
+         msg.ric = _rx_current_ric;
+         msg.func = _rx_current_func;
+         msg.isNumeric = (_rx_current_func == 0 || _rx_current_func == 1);
+         strcpy(msg.text, "[Tone Only]");
+         msg.textLen = strlen(msg.text);
+         msg.valid = true;
+         pushMessage(msg);
+    } 
+    // Handle Payload
+    else {
+        if (_rx_current_func == 0 || _rx_current_func == 1) {
+            decodeNumericMessage();
+        } else {
+            decodeAlphaMessage();
+        }
     }
     
     _rx_in_message = false;
@@ -647,15 +689,17 @@ void OpenPager::decodeNumericMessage() {
 }
 
 void OpenPager::pushMessage(PocsagMessage& msg) {
+    // Always trigger callback immediately
+    if (_rx_callback) {
+        _rx_callback(msg);
+    }
+
+    // Add to buffer if space available
     uint8_t nextHead = (_rx_head + 1) % POCSAG_RX_BUFFER_SIZE;
     
     if (nextHead != _rx_tail) {
         _rx_buffer[_rx_head] = msg;
         _rx_head = nextHead;
-        
-        if (_rx_callback) {
-            _rx_callback(msg);
-        }
     }
 }
 
