@@ -567,7 +567,8 @@ void OpenPager::processBatch() {
             uint8_t func = (cw >> 11) & 0x03;
             // Serial.printf("RX: ADDR %lu FRAME %d FUNC %d\n", address, i/2, func);
 
-            _rx_current_ric = address;
+            // Calculate full 21-bit RIC (Base 18 bits + 3 bits frame)
+            _rx_current_ric = (address << 3) | (i / 2);
             _rx_current_func = func;
             _rx_in_message = true;
             _rx_msg_cw_count = 0;

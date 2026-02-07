@@ -24,7 +24,7 @@ void setup() {
     
     // Initialize Radio
     float freq = 433.000;
-    uint16_t baud = 512;
+    uint16_t baud = 2400;
     
     pager.begin(freq, baud);
     
