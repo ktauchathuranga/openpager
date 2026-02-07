@@ -1,15 +1,34 @@
 #include "OpenPager.h"
 
+// Global instance pointer for callback trampoline
+static OpenPager* g_openPager = nullptr;
+
+// Trampoline callback implementation
+void OpenPager::staticCallback(PocsagMessage msg) {
+    if (g_openPager) {
+        // Now valid: static member accessing private member of instance
+        if (g_openPager->_rx_callback) {
+             g_openPager->_rx_callback(msg);
+        }
+        
+        // Buffer logic
+        uint8_t nextHead = (g_openPager->_rx_head + 1) % POCSAG_RX_BUFFER_SIZE;
+        if (nextHead != g_openPager->_rx_tail) {
+            g_openPager->_rx_buffer[g_openPager->_rx_head] = msg;
+            g_openPager->_rx_head = nextHead;
+        }
+    }
+}
+
 OpenPager::OpenPager(uint8_t csn_pin, uint8_t gdo0_pin) : 
     _csn(csn_pin), _gdo0(gdo0_pin), _freq(433.920), _last_baud(0), _invert(false),
-    _rx_active(false), _rx_baud(1200),
-    _rx_shift_reg(0), _rx_bit_count(0),
-    _rx_synced(false), _rx_inverted(false), _rx_preamble_ones(0),
-    _rx_cw_index(0),
-    _rx_current_ric(0), _rx_current_func(0), _rx_msg_cw_count(0), _rx_in_message(false),
-    _rx_last_msg_activity_us(0),
+    _rx_active(false), _rx_config_baud(1200),
+    _decoder_count(0),
     _rx_head(0), _rx_tail(0), _rx_callback(nullptr), _debug_callback(nullptr),
-    debugSampleCount(0), debugPreambleCount(0), debugSyncCount(0), debugBatchCount(0) {
+    debugSampleCount(0), debugPreambleCount(0), debugSyncCount(0), debugBatchCount(0) 
+{
+    g_openPager = this;
+    for (int i=0; i<3; i++) _decoders[i] = nullptr;
 }
 
 void OpenPager::begin(float freq_mhz, uint16_t baud) {
@@ -18,8 +37,8 @@ void OpenPager::begin(float freq_mhz, uint16_t baud) {
     digitalWrite(_csn, HIGH);
     
     SPI.begin();
-    initCC1101TX(baud);
-    _last_baud = baud;
+    initCC1101TX(baud > 0 ? baud : 2400); // 2400 default for auto
+    _last_baud = baud > 0 ? baud : 2400;
 }
 
 void OpenPager::setInvert(bool invert) {
@@ -29,7 +48,7 @@ void OpenPager::setInvert(bool invert) {
 void OpenPager::setFreq(float freq_mhz) {
     _freq = freq_mhz;
     if (_rx_active) {
-        initCC1101RX(_rx_baud);
+        initCC1101RX(_rx_config_baud);
     } else {
         initCC1101TX(_last_baud);
     }
@@ -38,37 +57,35 @@ void OpenPager::setFreq(float freq_mhz) {
 // ============== RX API ==============
 
 void OpenPager::startReceive(uint16_t baud) {
-    stopReceive();
+    stopReceive(); // Clear old decoders
     
-    _rx_baud = baud;
-    _bit_period_us = 1000000.0 / (double)baud;
-    _rx_sample_interval_us = (uint32_t)(_bit_period_us);
+    // Auto Mode (baud == 0) -> 2400 baud radio, 3 decoders
+    // Fixed Mode -> baud radio, 1 decoder
     
-    // Reset state
-    _rx_shift_reg = 0;
-    _rx_bit_count = 0;
-    _rx_synced = false;
-    _rx_inverted = false;
-    _rx_preamble_ones = 0;
-    _rx_cw_index = 0;
-    _rx_in_message = false;
-    _rx_msg_cw_count = 0;
-    _rx_head = 0;
-    _rx_tail = 0;
+    uint16_t radioBaud = (baud == 0) ? 2400 : baud;
+    _rx_config_baud = radioBaud;
     
-    // Reset debug counters
-    debugSampleCount = 0;
-    debugPreambleCount = 0;
-    debugSyncCount = 0;
-    debugBatchCount = 0;
+    initCC1101RX(radioBaud);
     
-    // Configure CC1101 for receive
-    initCC1101RX(baud);
+    if (baud == 0) {
+        // Auto: 512, 1200, 2400
+        _decoders[0] = new OpenPagerDecoder(512, OpenPager::staticCallback);
+        _decoders[1] = new OpenPagerDecoder(1200, OpenPager::staticCallback);
+        _decoders[2] = new OpenPagerDecoder(2400, OpenPager::staticCallback);
+        _decoder_count = 3;
+    } else {
+        // Fixed
+        _decoders[0] = new OpenPagerDecoder(baud, OpenPager::staticCallback);
+        _decoder_count = 1;
+    }
     
+    // inherit settings
+    for(int i=0; i<_decoder_count; i++) {
+        _decoders[i]->setInvert(_invert);
+    }
+
     // GDO0 as input
     pinMode(_gdo0, INPUT);
-    
-    _rx_last_sample_us = micros();
     _rx_active = true;
 }
 
@@ -77,6 +94,15 @@ void OpenPager::stopReceive() {
         _rx_active = false;
         sendCmd(0x36);  // SIDLE
     }
+    
+    // Delete decoders
+    for (int i = 0; i < _decoder_count; i++) {
+        if (_decoders[i]) {
+            delete _decoders[i];
+            _decoders[i] = nullptr;
+        }
+    }
+    _decoder_count = 0;
 }
 
 bool OpenPager::available() {
@@ -116,112 +142,21 @@ int16_t OpenPager::getRSSI() {
 // ============== Main Loop Processing ==============
 
 void OpenPager::loop() {
-    if (!_rx_active) return;
+    if (!_rx_active || _decoder_count == 0) return;
     
     uint32_t now = micros();
-    bool currentBit = digitalRead(_gdo0);
-    static bool lastBit = false;
-    static uint32_t lastEdge = 0;
-    static uint32_t nextSampleTime = 0;
+    bool bit = digitalRead(_gdo0);
     
-    // Detect edges and resync timing
-    if (currentBit != lastBit) {
-        lastBit = currentBit;
-        lastEdge = now;
-        
-        // Set next sample point to half a bit period from now (middle of bit)
-        nextSampleTime = now + (uint32_t)(_bit_period_us * 0.5);
+    for (uint8_t i = 0; i < _decoder_count; i++) {
+        _decoders[i]->process(now, bit);
     }
     
-    // Sample at the calculated mid-bit point
-    if ((int32_t)(now - nextSampleTime) >= 0 && nextSampleTime != 0) {
-        debugSampleCount++;
-        processSample(currentBit);
-        
-        // Schedule next sample one bit period later
-        nextSampleTime += (uint32_t)_bit_period_us;
-        
-        // Prevent runaway sampling if we missed many samples
-        if ((int32_t)(now - nextSampleTime) > (int32_t)(_bit_period_us * 3)) {
-            nextSampleTime = 0;  // Wait for next edge
-        }
+    // Update generic stats from first decoder (usually 512 or fixed)
+    if (_decoders[0]) {
+        debugSampleCount = _decoders[0]->debugSampleCount;
+        debugSyncCount = _decoders[0]->debugSyncCount;
+        debugBatchCount = _decoders[0]->debugBatchCount;
     }
-    
-    // Timeout: if we're in a message and haven't received activity in a while,
-    // finalize whatever we have
-    if (_rx_in_message && _rx_msg_cw_count > 0) {
-        uint32_t timeout_us = (uint32_t)(_bit_period_us * 32 * 20);  // ~20 codewords
-        if ((int32_t)(now - _rx_last_msg_activity_us) > (int32_t)timeout_us) {
-            finalizeMessage();
-        }
-    }
-}
-
-void OpenPager::processSample(bool bit) {
-    // User inversion setting (apply to raw bit)
-    if (_invert) bit = !bit;
-    
-    // Shift raw bit into register (do NOT apply auto-inversion here)
-    _rx_shift_reg = (_rx_shift_reg << 1) | (bit ? 1 : 0);
-    _rx_bit_count++;
-    
-    if (!_rx_synced) {
-        // Search for sync word
-        if (checkSyncWord()) {
-            _rx_synced = true;
-            _rx_bit_count = 0; // align
-            _rx_cw_index = 0;
-            debugSyncCount++;
-        }
-    } else {
-        // Synced - collect 32-bit codewords
-        if (_rx_bit_count == 32) {
-            _rx_codewords[_rx_cw_index] = _rx_shift_reg;
-            _rx_cw_index++;
-            _rx_bit_count = 0;
-            
-            // Check if we got a full batch (16 codewords)
-            if (_rx_cw_index >= 16) {
-                debugBatchCount++;
-                processBatch();
-                
-                // After batch, look for next sync
-                // NOTE: Don't reset _rx_in_message here - message may continue!
-                _rx_synced = false;
-                _rx_cw_index = 0;
-            }
-        }
-    }
-}
-
-bool OpenPager::checkSyncWord() {
-    // Helper to count bit differences
-    auto bitDiff = [](uint32_t a, uint32_t b) {
-        uint32_t x = a ^ b;
-        uint32_t count = 0;
-        while (x) {
-            count++;
-            x &= (x - 1);
-        }
-        return count;
-    };
-
-    // Check normal polarity (allow 2 bit errors)
-    if (bitDiff(_rx_shift_reg, POCSAG_SYNC_CODE) <= 2) {
-        _rx_inverted = false;
-        return true;
-    }
-    // Check inverted (allow 2 bit errors)
-    if (bitDiff(_rx_shift_reg, POCSAG_SYNC_INVERTED) <= 2) {
-        _rx_inverted = true;
-        return true;
-    }
-    // Check bit-inverted
-    if (bitDiff(~_rx_shift_reg, POCSAG_SYNC_CODE) <= 2) {
-        _rx_inverted = true;
-        return true;
-    }
-    return false;
 }
 
 // ============== CC1101 Driver ==============
@@ -255,44 +190,30 @@ void OpenPager::initCC1101TX(uint16_t baud) {
     uint8_t mdm4, mdm3;
     calcDataRate(baud, &mdm4, &mdm3);
 
-    // GDO0 config: 0x0D = Async serial data
-    writeReg(0x00, 0x06);  // IOCFG2: GDO2 unused
+    writeReg(0x00, 0x06);  // IOCFG2
     writeReg(0x02, 0x0D);  // IOCFG0: Async serial data
+    writeReg(0x08, 0x32);  // PKTCTRL0
     
-    writeReg(0x08, 0x32);  // PKTCTRL0: Async, infinite
+    writeReg(0x0D, (freq_reg >> 16) & 0xFF);
+    writeReg(0x0E, (freq_reg >> 8) & 0xFF);
+    writeReg(0x0F, freq_reg & 0xFF);
     
-    // Frequency
-    writeReg(0x0D, (freq_reg >> 16) & 0xFF);  // FREQ2
-    writeReg(0x0E, (freq_reg >> 8) & 0xFF);   // FREQ1
-    writeReg(0x0F, freq_reg & 0xFF);          // FREQ0
+    writeReg(0x10, mdm4);
+    writeReg(0x11, mdm3);
     
-    // Data rate
-    writeReg(0x10, mdm4);  // MDMCFG4
-    writeReg(0x11, mdm3);  // MDMCFG3
-    
-    // Modulation: 2-FSK
-    writeReg(0x12, 0x00);  // MDMCFG2: 2-FSK, no sync
-    
-    // Deviation: ~4.5kHz
+    writeReg(0x12, 0x00);  // 2-FSK
     writeReg(0x15, 0x34);  // DEVIATN
-    
-    // Main radio state machine
-    writeReg(0x18, 0x18);  // MCSM0: Auto calibrate on idle->TX/RX
-    
+    writeReg(0x18, 0x18);  // MCSM0
     writeReg(0x19, 0x16);  // FOCCFG
     writeReg(0x1B, 0x03);  // AGCCTRL2
-    
-    // Front end
     writeReg(0x21, 0x56);  // FREND1
     writeReg(0x22, 0x10);  // FREND0
     
-    // Calibration
-    writeReg(0x23, 0xE9);  // FSCAL3
-    writeReg(0x24, 0x2A);  // FSCAL2
-    writeReg(0x25, 0x00);  // FSCAL1
-    writeReg(0x26, 0x1F);  // FSCAL0
+    writeReg(0x23, 0xE9);
+    writeReg(0x24, 0x2A);
+    writeReg(0x25, 0x00);
+    writeReg(0x26, 0x1F);
     
-    // TX power
     writeReg(0x3E, 0xC0);  // PATABLE
     
     sendCmd(0x33);  // SCAL
@@ -300,114 +221,83 @@ void OpenPager::initCC1101TX(uint16_t baud) {
 }
 
 void OpenPager::initCC1101RX(uint16_t baud) {
-    sendCmd(0x30);  // SRES - Reset
+    sendCmd(0x30);
     delay(10);
     
     uint32_t freq_reg = (uint32_t)((_freq * 65536.0) / 26.0);
 
-    // === GDO Configuration ===
-    // GDO0: Output async serial data (0x0D)
-    writeReg(0x00, 0x06);  // IOCFG2: Asserts when sync word sent/received
-    writeReg(0x02, 0x0D);  // IOCFG0: Serial data output (async mode)
+    writeReg(0x00, 0x06);
+    writeReg(0x02, 0x0D);
     
-    // === Packet Configuration ===
-    writeReg(0x06, 0xFF);  // PKTLEN: Max packet length (not used in async)
-    writeReg(0x07, 0x00);  // PKTCTRL1: No address check
-    writeReg(0x08, 0x32);  // PKTCTRL0: Async serial mode, infinite length
+    writeReg(0x06, 0xFF);
+    writeReg(0x07, 0x00);
+    writeReg(0x08, 0x32);
     
-    // === Frequency Configuration ===
-    writeReg(0x0D, (freq_reg >> 16) & 0xFF);  // FREQ2
-    writeReg(0x0E, (freq_reg >> 8) & 0xFF);   // FREQ1
-    writeReg(0x0F, freq_reg & 0xFF);          // FREQ0
+    writeReg(0x0D, (freq_reg >> 16) & 0xFF);
+    writeReg(0x0E, (freq_reg >> 8) & 0xFF);
+    writeReg(0x0F, freq_reg & 0xFF);
     
-    // === Modem Configuration ===
-    // Data rate settings based on baud
-    // For 512 baud:  MDMCFG4=0xF4, MDMCFG3=0x4B
-    // For 1200 baud: MDMCFG4=0xF5, MDMCFG3=0x83
-    // For 2400 baud: MDMCFG4=0xF6, MDMCFG3=0x83
-    
-    // Channel filter bandwidth: needs to be wider for RX
-    // Use 0x87 for ~58kHz BW at 512, or 0x88 for wider
+    // Bandwidth selection
     uint8_t mdmcfg4;
-    if (baud == 512) {
-        mdmcfg4 = 0x87;  // ~58kHz RX bandwidth, 512 baud data rate
-    } else if (baud == 2400) {
-        mdmcfg4 = 0x88;  // Wider BW for 2400
+    // For Auto (2400) or Fixed 2400, we want wider BW
+    if (baud >= 2400) {
+        mdmcfg4 = 0x88; // Wider BW
     } else {
-        mdmcfg4 = 0x87;  // Default for 1200
+        mdmcfg4 = 0x87; // 512/1200
     }
     
     uint8_t mdmcfg3;
-    if (baud == 512) mdmcfg3 = 0x4B;
+     if (baud == 512) mdmcfg3 = 0x4B;
     else if (baud == 2400) mdmcfg3 = 0x83;
-    else mdmcfg3 = 0x83;  // 1200 default
+    else mdmcfg3 = 0x83;
     
-    writeReg(0x10, mdmcfg4);  // MDMCFG4: RX filter BW + data rate exponent
-    writeReg(0x11, mdmcfg3);  // MDMCFG3: Data rate mantissa
+    writeReg(0x10, mdmcfg4);
+    writeReg(0x11, mdmcfg3);
     
-    // MDMCFG2: 2-FSK modulation, no sync word (we do software sync)
-    writeReg(0x12, 0x00);  // 2-FSK, no sync word detection
+    writeReg(0x12, 0x00);
+    writeReg(0x13, 0x22);
+    writeReg(0x14, 0xF8);
+    writeReg(0x15, 0x15);
     
-    // MDMCFG1/MDMCFG0: Preamble/channel settings
-    writeReg(0x13, 0x22);  // MDMCFG1: 4 preamble bytes, 2 ch spacing exp
-    writeReg(0x14, 0xF8);  // MDMCFG0: Channel spacing mantissa
+    writeReg(0x17, 0x30);
+    writeReg(0x18, 0x18);
+    writeReg(0x19, 0x16);
+    writeReg(0x1A, 0x6C);
     
-    // === Deviation ===
-    // POCSAG uses ±4.5kHz deviation
-    // With 26MHz crystal: DEVIATION = 4500 / (26e6 / 2^17) = 22.7 -> 0x14 or 0x15
-    writeReg(0x15, 0x15);  // DEVIATN: ~4.5kHz deviation
+    writeReg(0x1B, 0x03);
+    writeReg(0x1C, 0x40);
+    writeReg(0x1D, 0x91);
     
-    // === Main Radio Control State Machine ===
-    writeReg(0x17, 0x30);  // MCSM1: Stay in RX after packet
-    writeReg(0x18, 0x18);  // MCSM0: Auto calibrate on IDLE->RX
+    writeReg(0x21, 0x56);
+    writeReg(0x22, 0x10);
     
-    // === Frequency Offset Compensation ===
-    writeReg(0x19, 0x16);  // FOCCFG: Freq offset compensation
+    writeReg(0x23, 0xE9);
+    writeReg(0x24, 0x2A);
+    writeReg(0x25, 0x00);
+    writeReg(0x26, 0x1F);
     
-    // === Bit Synchronization ===
-    writeReg(0x1A, 0x6C);  // BSCFG: Bit sync config
+    writeReg(0x29, 0x59);
+    writeReg(0x2C, 0x81);
+    writeReg(0x2D, 0x35);
+    writeReg(0x2E, 0x09);
     
-    // === AGC Configuration ===
-    // Higher sensitivity for weak signals
-    writeReg(0x1B, 0x03);  // AGCCTRL2: 33dB target amplitude
-    writeReg(0x1C, 0x40);  // AGCCTRL1: Carrier sense threshold
-    writeReg(0x1D, 0x91);  // AGCCTRL0: AGC config
-    
-    // === Front End Configuration ===
-    writeReg(0x21, 0x56);  // FREND1: RX front end config
-    writeReg(0x22, 0x10);  // FREND0: TX front end config
-    
-    // === Frequency Synthesizer Calibration ===
-    writeReg(0x23, 0xE9);  // FSCAL3
-    writeReg(0x24, 0x2A);  // FSCAL2
-    writeReg(0x25, 0x00);  // FSCAL1
-    writeReg(0x26, 0x1F);  // FSCAL0
-    
-    // === Miscellaneous ===
-    writeReg(0x29, 0x59);  // FSTEST
-    writeReg(0x2C, 0x81);  // TEST2
-    writeReg(0x2D, 0x35);  // TEST1
-    writeReg(0x2E, 0x09);  // TEST0
-    
-    // Calibrate frequency synthesizer
-    sendCmd(0x33);  // SCAL
+    sendCmd(0x33);
     delay(5);
     
-    // Enter RX mode
-    sendCmd(0x36);  // SIDLE first
+    sendCmd(0x36);
     delay(1);
-    sendCmd(0x34);  // SRX - Start receiving
+    sendCmd(0x34);
     delay(1);
 }
 
 void OpenPager::calcDataRate(uint16_t baud, uint8_t *mdm4, uint8_t *mdm3) {
     if (baud == 512) { *mdm4 = 0xF4; *mdm3 = 0x4B; }
     else if (baud == 2400) { *mdm4 = 0xF6; *mdm3 = 0x83; }
-    else { *mdm4 = 0xF5; *mdm3 = 0x83; }  // Default 1200
+    else { *mdm4 = 0xF5; *mdm3 = 0x83; }
 }
 
-// ============== POCSAG TX Encoding ==============
-
+// ============== POCSAG TX Encoding Same as before ==============
+// (Helpers for TX)
 uint32_t OpenPager::bchEncode(uint32_t data) {
     uint32_t cwE = data & 0xFFFFF800;
     for (int i = 0; i < 21; i++) {
@@ -476,300 +366,7 @@ uint8_t OpenPager::charToBcd(char c) {
     return 0x0C;
 }
 
-// ============== POCSAG RX Decoding ==============
-
-bool OpenPager::bchCheck(uint32_t cw) {
-    // Re-calculate BCH and parity from the data bits
-    // If the received codeword is valid, it must match the re-encoded version exactly
-    return (bchEncode(cw) == cw);
-}
-
-// Try to correct 1 bit error
-uint32_t OpenPager::bchRepair(uint32_t cw) {
-    if (bchCheck(cw)) return cw;
-    
-    // Try flipping each of the 32 bits
-    for (int i = 0; i < 32; i++) {
-        uint32_t corrected = cw ^ (1UL << i);
-        if (bchCheck(corrected)) {
-            return corrected;
-        }
-    }
-    return 0; // Uncorrectable
-}
-
-char OpenPager::bcdToChar(uint8_t bcd) {
-    // Reverse the 4-bit BCD
-    bcd = ((bcd & 0x01) << 3) | ((bcd & 0x02) << 1) | 
-          ((bcd & 0x04) >> 1) | ((bcd & 0x08) >> 3);
-    
-    if (bcd <= 9) return '0' + bcd;
-    switch (bcd) {
-        case 0x0A: return '*';
-        case 0x0B: return 'U';
-        case 0x0C: return ' ';
-        case 0x0D: return '-';
-        case 0x0E: return ')';
-        case 0x0F: return '(';
-        default: return '?';
-    }
-}
-
-void OpenPager::processBatch() {
-    // Debug callback
-    if (_debug_callback) {
-        _debug_callback(_rx_codewords, 16);
-    }
-
-    for (uint8_t i = 0; i < 16; i++) {
-        uint32_t cw = _rx_codewords[i];
-        
-        // Apply polarity inversion if detected
-        if (_rx_inverted) cw = ~cw;
-        
-        // Skip idle codewords
-        if (cw == POCSAG_IDLE_CODE) {
-            // If we were in a message, finalize it (even if count=0 for Tone Only)
-            if (_rx_in_message) {
-                // Serial.println("RX: IDLE -> FINALIZE");
-                finalizeMessage();
-            }
-            continue;
-        }
-        
-        // Check BCH (Valid or 1-bit correctable)
-        bool bchOk = bchCheck(cw);
-        if (!bchOk) {
-            uint32_t corrected = bchRepair(cw);
-            if (corrected != 0) {
-                cw = corrected;
-                bchOk = true;
-            }
-        }
-        
-        // Skip invalid codewords
-        if (!bchOk) {
-            continue;
-        }
-        
-        bool isMessage = (cw >> 31) & 1;
-        
-        if (!isMessage) {
-            // Address detected
-            // Finalize previous message if exists
-            if (_rx_in_message) {
-                finalizeMessage();
-            }
-            
-            // Mask address (18 bits)
-            uint32_t address = (cw >> 13) & 0x7FFFF;
-            // Function bits
-            uint8_t func = (cw >> 11) & 0x03;
-            // Serial.printf("RX: ADDR %lu FRAME %d FUNC %d\n", address, i/2, func);
-
-            // Calculate full 21-bit RIC (Base 18 bits + 3 bits frame)
-            _rx_current_ric = (address << 3) | (i / 2);
-            _rx_current_func = func;
-            _rx_in_message = true;
-            _rx_msg_cw_count = 0;
-            
-        } else if (_rx_in_message) {
-            // Message codeword - accumulate
-            if (_rx_msg_cw_count < 32) {
-                 // Serial.printf("RX: MSG CW %08X\n", cw);
-                 _rx_msg_cws[_rx_msg_cw_count++] = cw;
-            }
-        }
-    }
-    _rx_last_msg_activity_us = micros();
-    
-    // NOTE: Do NOT finalize at batch end!
-    // Message may continue in next batch.
-    // Only finalize when we see IDLE or new ADDRESS.
-}
-
-void OpenPager::finalizeMessage() {
-    // Handle Tone Only (count 0) or Payload
-    PocsagMessage msg;
-    msg.ric = _rx_current_ric; // Base address
-    // Convert to actual RIC (Base * 8 + Function) is convention? 
-    // Usually RIC is Base*8 + Frame. Function is separate.
-    // Library provides raw Base RIC.
-    
-    msg.func = _rx_current_func;
-    msg.isNumeric = (_rx_current_func == 0 || _rx_current_func == 1); // 0,1=Numeric usually, 3=Alpha
-    
-    // Handle Tone Only (count 0)
-    if (_rx_msg_cw_count == 0) {
-         PocsagMessage msg;
-         msg.ric = _rx_current_ric;
-         msg.func = _rx_current_func;
-         msg.isNumeric = (_rx_current_func == 0 || _rx_current_func == 1);
-         strcpy(msg.text, "[Tone Only]");
-         msg.textLen = strlen(msg.text);
-         msg.valid = true;
-         pushMessage(msg);
-    } 
-    // Handle Payload
-    else {
-        if (_rx_current_func == 0 || _rx_current_func == 1) {
-            decodeNumericMessage();
-        } else {
-            decodeAlphaMessage();
-        }
-    }
-    
-    _rx_in_message = false;
-    _rx_msg_cw_count = 0;
-}
-
-void OpenPager::decodeAlphaMessage() {
-    PocsagMessage msg;
-    msg.ric = _rx_current_ric;
-    msg.func = _rx_current_func;
-    msg.isNumeric = false;
-    msg.valid = true;
-    msg.textLen = 0;
-    
-    uint64_t bitBuf = 0;
-    uint8_t bitCount = 0;
-    
-    for (uint8_t i = 0; i < _rx_msg_cw_count; i++) {
-        uint32_t data = (_rx_msg_cws[i] >> 11) & 0xFFFFF;
-        
-        bitBuf = (bitBuf << 20) | data;
-        bitCount += 20;
-        
-        while (bitCount >= 7 && msg.textLen < 254) {
-            bitCount -= 7;
-            uint8_t ch = (bitBuf >> bitCount) & 0x7F;
-            
-            // Reverse bits
-            ch = ((ch & 0x01) << 6) | ((ch & 0x02) << 4) | ((ch & 0x04) << 2) |
-                 (ch & 0x08) | ((ch & 0x10) >> 2) | ((ch & 0x20) >> 4) | ((ch & 0x40) >> 6);
-            
-            // Check for EOT or null
-            if (ch == 0x04 || ch == 0x00) {
-                msg.text[msg.textLen] = '\0';
-                pushMessage(msg);
-                return;
-            }
-            
-            msg.text[msg.textLen++] = (char)ch;
-        }
-    }
-    
-    msg.text[msg.textLen] = '\0';
-    if (msg.textLen > 0) {
-        pushMessage(msg);
-    }
-}
-
-void OpenPager::decodeNumericMessage() {
-    PocsagMessage msg;
-    msg.ric = _rx_current_ric;
-    msg.func = _rx_current_func;
-    msg.isNumeric = true;
-    msg.valid = true;
-    msg.textLen = 0;
-    
-    for (uint8_t i = 0; i < _rx_msg_cw_count; i++) {
-        uint32_t data = (_rx_msg_cws[i] >> 11) & 0xFFFFF;
-        
-        for (int d = 4; d >= 0 && msg.textLen < 254; d--) {
-            uint8_t bcd = (data >> (d * 4)) & 0x0F;
-            char c = bcdToChar(bcd);
-            msg.text[msg.textLen++] = c;
-        }
-    }
-    
-    msg.text[msg.textLen] = '\0';
-    if (msg.textLen > 0) {
-        pushMessage(msg);
-    }
-}
-
-void OpenPager::pushMessage(PocsagMessage& msg) {
-    // Always trigger callback immediately
-    if (_rx_callback) {
-        _rx_callback(msg);
-    }
-
-    // Add to buffer if space available
-    uint8_t nextHead = (_rx_head + 1) % POCSAG_RX_BUFFER_SIZE;
-    
-    if (nextHead != _rx_tail) {
-        _rx_buffer[_rx_head] = msg;
-        _rx_head = nextHead;
-    }
-}
-
-// ============== TX Functions ==============
-
-void OpenPager::transmit(uint32_t ric, uint8_t func, String msg, uint16_t baud, bool alpha) {
-    bool wasReceiving = _rx_active;
-    if (wasReceiving) {
-        stopReceive();
-    }
-    
-    if (baud != _last_baud) {
-        initCC1101TX(baud);
-        _last_baud = baud;
-    }
-    
-    pinMode(_gdo0, OUTPUT);
-    digitalWrite(_gdo0, LOW);
-
-    uint32_t addr_cw = createAddressCW(ric, func);
-    uint32_t msg_cw[128];
-    uint16_t msg_count = 0;
-    
-    if (alpha) encodeAlpha(msg, msg_cw, &msg_count);
-    else encodeNumeric(msg, msg_cw, &msg_count);
-
-    uint8_t frame = ric & 0x07;
-    uint16_t start_slot = frame * 2;
-    uint16_t total_cw = 1 + msg_count;
-    uint16_t batches = (start_slot + total_cw + 15) / 16;
-
-    sendCmd(0x35);  // STX
-    
-    _bit_period_us = 1000000.0 / (double)baud;
-    _bits_sent = 0;
-    _bit_start_us = micros();
-
-    // Preamble
-    for (int i = 0; i < 20; i++) sendWord(0xAAAAAAAA);
-
-    uint16_t msg_idx = 0;
-    bool addr_sent = false;
-    for (uint16_t b = 0; b < batches; b++) {
-        sendWord(POCSAG_SYNC_CODE);
-        for (uint8_t f = 0; f < 8; f++) {
-            for (uint8_t s = 0; s < 2; s++) {
-                if (!addr_sent && f == frame) {
-                    sendWord(addr_cw);
-                    addr_sent = true;
-                } else if (addr_sent && msg_idx < msg_count) {
-                    sendWord(msg_cw[msg_idx++]);
-                } else {
-                    sendWord(POCSAG_IDLE_CODE);
-                }
-            }
-        }
-        if (msg_idx >= msg_count) break;
-    }
-
-    for (int i = 0; i < 4; i++) sendWord(POCSAG_IDLE_CODE);
-    
-    digitalWrite(_gdo0, LOW);
-    sendCmd(0x36);  // SIDLE
-    
-    if (wasReceiving) {
-        startReceive(_rx_baud);
-    }
-}
-
+// TX helpers
 void OpenPager::sendBit(bool bit) {
     if (_invert) bit = !bit;
     digitalWrite(_gdo0, bit ? LOW : HIGH);

@@ -4,13 +4,14 @@ OpenPager is a high-precision POCSAG (pager) transceiver library for Arduino-com
 
 ## Features
 
-- **TX & RX**: Full duplex support - transmit and receive POCSAG messages
-- **Baud Rates**: 512, 1200, and 2400 baud
-- **Message Modes**: Alphanumeric (7-bit ASCII) and Numeric (4-bit BCD)
+- **RX & TX**: Full duplex support - transmit and receive POCSAG messages
+- **Auto-Baud**: Automatically detects and receives 512, 1200, and 2400 baud messages simultaneously
+- **Message Modes**: Alphanumeric (7-bit ASCII), Numeric (4-bit BCD), and Tone Only
 - **Receiver Features**:
+  - Parallel decoding of multiple baud rates
   - Edge-based bit recovery with software clock synchronization
   - Automatic polarity detection (handles inverted signals)
-  - BCH error detection
+  - BCH error detection (SECDED)
   - Async callback or polling API
   - RSSI monitoring
 - **Timing Precision**: Sub-microsecond timing for reliable encoding/decoding
@@ -69,9 +70,9 @@ void onMessage(PocsagMessage msg) {
 
 void setup() {
     Serial.begin(115200);
-    pager.begin(433.920, 1200);
+    pager.begin(433.920, 0);       // Initialize radio (0 = Auto-Baud mode)
     pager.setCallback(onMessage);
-    pager.startReceive(1200);
+    pager.startReceive(0);         // Start listening for 512, 1200, and 2400 baud
 }
 
 void loop() {
@@ -95,7 +96,7 @@ void loop() {
 ### RX Methods
 | Method | Description |
 |--------|-------------|
-| `startReceive(baud)` | Start receiving |
+| `startReceive(baud)` | Start receiving (0 = Auto-Baud for all rates) |
 | `stopReceive()` | Stop receiving |
 | `available()` | Check for messages |
 | `getMessage()` | Get received message |
@@ -111,6 +112,7 @@ struct PocsagMessage {
     uint8_t textLen;   // Text length
     bool isNumeric;    // Numeric or alpha
     bool valid;        // BCH valid
+    uint16_t baudRate; // Detected baud rate
 };
 ```
 
@@ -130,7 +132,8 @@ arduino-cli compile -u -p /dev/ttyUSB0 --fqbn esp8266:esp8266:generic \
 
 ### RX Architecture
 - CC1101 operates in async mode, outputting raw demodulated data on GDO0
-- GPIO interrupt measures pulse widths for bit timing recovery
+- **Parallel Decoders**: Spawns 3 independent `OpenPagerDecoder` instances (512, 1200, 2400)
+- **Auto-Baud**: All decoders process signal in parallel; valid sync locks the appropriate decoder
 - Software PLL maintains bit synchronization
 - 32-bit sync word detection with automatic polarity handling
 - BCH(31,21) validation on each codeword

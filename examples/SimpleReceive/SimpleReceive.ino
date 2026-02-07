@@ -8,6 +8,7 @@ OpenPager pager(15, 5);
 void onMessage(PocsagMessage msg) {
     Serial.println("\n========== MESSAGE ==========");
     Serial.printf("RIC: %lu\n", msg.ric);
+    Serial.printf("Baud: %d\n", msg.baudRate);
     Serial.printf("Func: %d\n", msg.func);
     Serial.printf("Type: %s\n", msg.isNumeric ? "NUM" : "ALPHA");
     Serial.printf("Text: %s\n", msg.text);
@@ -24,7 +25,7 @@ void setup() {
     
     // Initialize Radio
     float freq = 433.000;
-    uint16_t baud = 2400;
+    uint16_t baud = 0; // 0 = Auto-Baud (512/1200/2400 parallel)
     
     pager.begin(freq, baud);
     
