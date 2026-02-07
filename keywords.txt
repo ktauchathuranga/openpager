@@ -1,7 +1,22 @@
+# Library Keywords
+# https://arduino.github.io/arduino-cli/latest/library-specification/
+
 OpenPager	KEYWORD1
-transmit	KEYWORD2
+PocsagMessage	KEYWORD1
+PocsagCallback	KEYWORD1
+
 begin	KEYWORD2
+transmit	KEYWORD2
 setInvert	KEYWORD2
 setFreq	KEYWORD2
-POCSAG_ALPHA	LITERAL1
+startReceive	KEYWORD2
+stopReceive	KEYWORD2
+available	KEYWORD2
+getMessage	KEYWORD2
+setCallback	KEYWORD2
+getRSSI	KEYWORD2
+
+POCSAG_SYNC_CODE	LITERAL1
+POCSAG_IDLE_CODE	LITERAL1
 POCSAG_NUMERIC	LITERAL1
+POCSAG_ALPHA	LITERAL1

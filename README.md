@@ -1,25 +1,28 @@
 # OpenPager
 
-OpenPager is a high-precision POCSAG (pager) transmitter library for Arduino-compatible microcontrollers (ESP8266, ESP32, etc.) and the TI CC1101 radio transceiver. It provides a robust implementation of the POCSAG protocol, supporting multiple baud rates and encoding modes with a focus on timing accuracy to ensure reliable decoding by standard pager receivers and software-defined radio (SDR) decoders.
+OpenPager is a high-precision POCSAG (pager) transceiver library for Arduino-compatible microcontrollers (ESP8266, ESP32, etc.) and the TI CC1101 radio transceiver. It provides a robust implementation of the POCSAG protocol for both **transmitting** and **receiving** messages.
 
 ## Features
 
-- Supported Baud Rates: 512, 1200, and 2400 baud.
-- Message Modes: Supports both Alphanumeric (7-bit ASCII) and Numeric (4-bit BCD) encoding.
-- Timing Precision: Implements a sub-microsecond timing system using absolute target tracking to eliminate cumulative bit-drift, which is critical for long messages at high baud rates.
-- Hardware Compatibility: Optimized for ESP8266, ESP32, and other Arduino-compatible boards.
-- Automatic Calibration: Automatically reconfigures CC1101 registers when baud rates or frequencies are changed.
-- Configurable Polarity: Supports FSK inversion to match different receiver requirements.
+- **TX & RX**: Full duplex support - transmit and receive POCSAG messages
+- **Baud Rates**: 512, 1200, and 2400 baud
+- **Message Modes**: Alphanumeric (7-bit ASCII) and Numeric (4-bit BCD)
+- **Receiver Features**:
+  - Edge-based bit recovery with software clock synchronization
+  - Automatic polarity detection (handles inverted signals)
+  - BCH error detection
+  - Async callback or polling API
+  - RSSI monitoring
+- **Timing Precision**: Sub-microsecond timing for reliable encoding/decoding
+- **Hardware**: Optimized for ESP8266/ESP32 with CC1101 module
 
 ## Hardware Requirements
 
-- Microcontroller: ESP8266 (e.g., NodeMCU, Wemos D1 Mini), ESP32, or other Arduino-compatible boards.
-- Radio Module: TI CC1101 (commonly found on 433MHz or 868/915MHz modules).
-- Connection: SPI interface.
+- **Microcontroller**: ESP8266, ESP32, or Arduino-compatible boards
+- **Radio Module**: TI CC1101 (433MHz or 868/915MHz)
+- **Connection**: SPI interface
 
-### Wiring Diagram
-
-Default wiring for ESP8266:
+### Wiring (ESP8266 Default)
 
 | CC1101 Pin | ESP8266 Pin | Description |
 |------------|-------------|-------------|
@@ -27,82 +30,112 @@ Default wiring for ESP8266:
 | GND        | GND         | Ground      |
 | SI (MOSI)  | D7 (GPIO13) | SPI MOSI    |
 | SO (MISO)  | D6 (GPIO12) | SPI MISO    |
-| SCK (CLK)  | D5 (GPIO14) | SPI Clock   |
-| CSN (CS)   | D8 (GPIO15) | SPI Chip Select (Configurable) |
-| GDO0       | D1 (GPIO5)  | Asynchronous Data Input (Configurable) |
+| SCK        | D5 (GPIO14) | SPI Clock   |
+| CSN        | D8 (GPIO15) | Chip Select |
+| GDO0       | D1 (GPIO5)  | Data I/O    |
 
 ## Installation
 
-1. Download or clone this repository.
-2. Move the `openpager` folder into your Arduino `libraries` folder (usually located at `Documents/Arduino/libraries`).
-3. Restart the Arduino IDE.
+1. Copy `openpager` folder to Arduino `libraries` directory
+2. Restart Arduino IDE
 
-## Quick Start (CLI)
+## Quick Start
 
-To compile, upload, and open the serial monitor in a single command using `arduino-cli`, run the following from the root of the library directory:
+### Transmit Example
+```cpp
+#include <OpenPager.h>
 
-```bash
-arduino-cli compile -u -p /dev/ttyUSB0 --fqbn esp8266:esp8266:generic --library . examples/SimpleTransmit/SimpleTransmit.ino && arduino-cli monitor -p /dev/ttyUSB0 -c baudrate=115200
+OpenPager pager(15, 5);  // CSN, GDO0
+
+void setup() {
+    pager.begin(433.920, 1200);
+}
+
+void loop() {
+    pager.transmit(1234567, 3, "Hello World", 1200, true);
+    delay(5000);
+}
+```
+
+### Receive Example
+```cpp
+#include <OpenPager.h>
+
+OpenPager pager(15, 5);
+
+void onMessage(PocsagMessage msg) {
+    Serial.printf("[RIC: %lu] %s\n", msg.ric, msg.text);
+}
+
+void setup() {
+    Serial.begin(115200);
+    pager.begin(433.920, 1200);
+    pager.setCallback(onMessage);
+    pager.startReceive(1200);
+}
+
+void loop() {
+    // Messages arrive via callback
+}
 ```
 
 ## API Reference
 
 ### Constructor
 `OpenPager(uint8_t csn_pin, uint8_t gdo0_pin)`
-- `csn_pin`: The GPIO pin used for SPI Chip Select.
-- `gdo0_pin`: The GPIO pin connected to the CC1101 GDO0 pin for asynchronous data transmission.
 
-### Methods
+### TX Methods
+| Method | Description |
+|--------|-------------|
+| `begin(freq, baud)` | Initialize radio |
+| `transmit(ric, func, msg, baud, alpha)` | Send message |
+| `setFreq(freq)` | Update frequency |
+| `setInvert(bool)` | Invert FSK polarity |
 
-`void begin(float freq_mhz = 433.920, uint16_t baud = 1200)`
-- Initializes the SPI interface and configures the CC1101 with the specified frequency and baud rate.
+### RX Methods
+| Method | Description |
+|--------|-------------|
+| `startReceive(baud)` | Start receiving |
+| `stopReceive()` | Stop receiving |
+| `available()` | Check for messages |
+| `getMessage()` | Get received message |
+| `setCallback(fn)` | Set async callback |
+| `getRSSI()` | Get signal strength |
 
-`void transmit(uint32_t ric, uint8_t func, String msg, uint16_t baud = 1200, bool alpha = true)`
-- Transmits a POCSAG message.
-- `ric`: Receiver Identification Code (Capcode).
-- `func`: Function bits (typically 0-3). Conventions: 3 for Alphanumeric, 0 for Numeric.
-- `msg`: The message string to transmit.
-- `baud`: The transmission speed (512, 1200, or 2400).
-- `alpha`: Set to true for Alphanumeric mode, false for Numeric mode.
-
-`void setInvert(bool invert)`
-- Inverts the FSK polarity. Some receivers require inverted signals (High Freq = 1 instead of 0).
-
-`void setFreq(float freq_mhz)`
-- Updates the carrier frequency and re-calibrates the CC1101.
-
-## Example Usage
-
+### PocsagMessage Structure
 ```cpp
-#include <OpenPager.h>
-
-// Initialize OpenPager with default pins (D8 for CSN, D1 for GDO0)
-OpenPager pager(15, 5);
-
-void setup() {
-    Serial.begin(115200);
-    // Start at 433.92 MHz and 1200 baud
-    pager.begin(433.920, 1200);
-}
-
-void loop() {
-    // Send an Alphanumeric message
-    pager.transmit(1234567, 3, "Hello World", 1200, true);
-    delay(5000);
-
-    // Send a Numeric message
-    pager.transmit(1234567, 0, "123-4567", 1200, false);
-    delay(5000);
-}
+struct PocsagMessage {
+    uint32_t ric;      // Receiver ID
+    uint8_t func;      // Function (0-3)
+    char text[256];    // Message text
+    uint8_t textLen;   // Text length
+    bool isNumeric;    // Numeric or alpha
+    bool valid;        // BCH valid
+};
 ```
 
-## Technical Background
+## CLI Build & Upload
 
-### Timing Precision
-In asynchronous serial mode, the CC1101 modulator samples the input pin at 8 times the configured internal data rate. Any jitter or drift in the bit-banging process can lead to decoding failures, especially as message length increases. OpenPager calculates the absolute target time for every bit relative to the start of the transmission using high-precision timing, ensuring zero cumulative error over the entire batch sequence.
+```bash
+# Transmit example
+arduino-cli compile -u -p /dev/ttyUSB0 --fqbn esp8266:esp8266:generic \
+    --library . examples/SimpleTransmit/SimpleTransmit.ino
 
-### BCH Error Correction
-The library implements the BCH(31,21) error correction algorithm required by the POCSAG standard. It calculates the 10 parity bits and the final even parity bit for every address and message codeword.
+# Receive example
+arduino-cli compile -u -p /dev/ttyUSB0 --fqbn esp8266:esp8266:generic \
+    --library . examples/SimpleReceive/SimpleReceive.ino
+```
 
-### Frame Sequencing
-POCSAG messages are organized into batches. Each batch begins with a Sync word followed by 8 frames (2 slots each). The library automatically calculates the correct frame for a given RIC and manages the transmission of multiple batches if a message exceeds the available slots in the current batch.
+## Technical Notes
+
+### RX Architecture
+- CC1101 operates in async mode, outputting raw demodulated data on GDO0
+- GPIO interrupt measures pulse widths for bit timing recovery
+- Software PLL maintains bit synchronization
+- 32-bit sync word detection with automatic polarity handling
+- BCH(31,21) validation on each codeword
+
+### Limitations
+- Cannot TX and RX simultaneously (half-duplex)
+- 2400 baud RX works best on ESP32 (ESP8266 has ~3-5µs interrupt jitter)
+- Message buffer holds 4 messages; older messages dropped if full
