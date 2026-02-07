@@ -4,7 +4,7 @@
 static OpenPager* g_openPager = nullptr;
 
 // Trampoline callback implementation
-void OpenPager::staticCallback(PocsagMessage msg) {
+void OpenPager::staticCallback(OpenPagerMessage msg) {
     if (g_openPager) {
         // Now valid: static member accessing private member of instance
         if (g_openPager->_rx_callback) {
@@ -12,7 +12,7 @@ void OpenPager::staticCallback(PocsagMessage msg) {
         }
         
         // Buffer logic
-        uint8_t nextHead = (g_openPager->_rx_head + 1) % POCSAG_RX_BUFFER_SIZE;
+        uint8_t nextHead = (g_openPager->_rx_head + 1) % OPENPAGER_RX_BUFFER_SIZE;
         if (nextHead != g_openPager->_rx_tail) {
             g_openPager->_rx_buffer[g_openPager->_rx_head] = msg;
             g_openPager->_rx_head = nextHead;
@@ -55,6 +55,63 @@ void OpenPager::setFreq(float freq_mhz) {
 }
 
 // ============== RX API ==============
+
+void OpenPager::transmit(uint32_t ric, uint8_t func, String msg, uint16_t baud, bool alpha) {
+    if (_rx_active) stopReceive();
+
+    if (baud != _last_baud) {
+        initCC1101TX(baud);
+        _last_baud = baud;
+    }
+
+    uint32_t addr_cw = createAddressCW(ric, func);
+    uint32_t msg_cw[128];
+    uint16_t msg_count = 0;
+    
+    if (alpha) encodeAlpha(msg, msg_cw, &msg_count);
+    else encodeNumeric(msg, msg_cw, &msg_count);
+
+    uint8_t frame = ric & 0x07;
+    uint16_t start_slot = frame * 2;
+    uint16_t total_cw = 1 + msg_count;
+    uint16_t batches = (start_slot + total_cw + 15) / 16;
+
+    // Start TX
+    pinMode(_gdo0, OUTPUT);
+    sendCmd(0x35); // STX
+    
+    _bit_period_us = 1000000.0 / (double)baud;
+    _bits_sent = 0;
+    _bit_start_us = micros();
+
+    // Preamble
+    for (int i = 0; i < 20; i++) sendWord(0xAAAAAAAA);
+
+    uint16_t msg_idx = 0;
+    bool addr_sent = false;
+    for (uint16_t b = 0; b < batches; b++) {
+        sendWord(POCSAG_SYNC_CODE);
+        for (uint8_t f = 0; f < 8; f++) {
+            for (uint8_t s = 0; s < 2; s++) {
+                if (!addr_sent && f == frame) {
+                    sendWord(addr_cw);
+                    addr_sent = true;
+                } else if (addr_sent && msg_idx < msg_count) {
+                    sendWord(msg_cw[msg_idx++]);
+                } else {
+                    sendWord(POCSAG_IDLE_CODE);
+                }
+            }
+        }
+        if (msg_idx >= msg_count) break;
+    }
+
+    for (int i = 0; i < 4; i++) sendWord(POCSAG_IDLE_CODE);
+    
+    digitalWrite(_gdo0, LOW);
+    sendCmd(0x36); // SIDLE
+    pinMode(_gdo0, INPUT);
+}
 
 void OpenPager::startReceive(uint16_t baud) {
     stopReceive(); // Clear old decoders
@@ -109,22 +166,22 @@ bool OpenPager::available() {
     return (_rx_head != _rx_tail);
 }
 
-PocsagMessage OpenPager::getMessage() {
-    PocsagMessage msg;
+OpenPagerMessage OpenPager::getMessage() {
+    OpenPagerMessage msg;
     msg.valid = false;
     
     if (_rx_head != _rx_tail) {
         msg = _rx_buffer[_rx_tail];
-        _rx_tail = (_rx_tail + 1) % POCSAG_RX_BUFFER_SIZE;
+        _rx_tail = (_rx_tail + 1) % OPENPAGER_RX_BUFFER_SIZE;
     }
     return msg;
 }
 
-void OpenPager::setCallback(PocsagCallback cb) {
+void OpenPager::setCallback(OpenPagerCallback cb) {
     _rx_callback = cb;
 }
 
-void OpenPager::setDebugCallback(PocsagDebugCallback cb) {
+void OpenPager::setDebugCallback(OpenPagerDebugCallback cb) {
     _debug_callback = cb;
 }
 
@@ -183,40 +240,35 @@ void OpenPager::sendCmd(uint8_t cmd) {
 }
 
 void OpenPager::initCC1101TX(uint16_t baud) {
-    sendCmd(0x30);  // SRES
+    sendCmd(0x30); // SRES
     delay(10);
     
     uint32_t freq_reg = (uint32_t)((_freq * 65536.0) / 26.0);
     uint8_t mdm4, mdm3;
     calcDataRate(baud, &mdm4, &mdm3);
 
-    writeReg(0x00, 0x06);  // IOCFG2
-    writeReg(0x02, 0x0D);  // IOCFG0: Async serial data
-    writeReg(0x08, 0x32);  // PKTCTRL0
-    
+    writeReg(0x02, 0x0D); // IOCFG0: Async Serial
+    writeReg(0x08, 0x32); // PKTCTRL0: Async, Infinite
     writeReg(0x0D, (freq_reg >> 16) & 0xFF);
     writeReg(0x0E, (freq_reg >> 8) & 0xFF);
     writeReg(0x0F, freq_reg & 0xFF);
-    
     writeReg(0x10, mdm4);
     writeReg(0x11, mdm3);
+    writeReg(0x12, 0x00); // 2-FSK
+    writeReg(0x13, 0x22); // Deviation
+    writeReg(0x15, 0x40); // Standard deviation settings
+    writeReg(0x18, 0x18); // FSCTRL0
+    writeReg(0x19, 0x16); // FOCCFG
+    writeReg(0x1B, 0x03); // AGCCTRL2
+    writeReg(0x21, 0x56); // FREND1
+    writeReg(0x22, 0x10); // FREND0
+    writeReg(0x23, 0xE9); // FSCAL3
+    writeReg(0x24, 0x2A); // FSCAL2
+    writeReg(0x25, 0x00); // FSCAL1
+    writeReg(0x26, 0x1F); // FSCAL0
+    writeReg(0x3E, 0xC0); // PATABLE: Max Power
     
-    writeReg(0x12, 0x00);  // 2-FSK
-    writeReg(0x15, 0x34);  // DEVIATN
-    writeReg(0x18, 0x18);  // MCSM0
-    writeReg(0x19, 0x16);  // FOCCFG
-    writeReg(0x1B, 0x03);  // AGCCTRL2
-    writeReg(0x21, 0x56);  // FREND1
-    writeReg(0x22, 0x10);  // FREND0
-    
-    writeReg(0x23, 0xE9);
-    writeReg(0x24, 0x2A);
-    writeReg(0x25, 0x00);
-    writeReg(0x26, 0x1F);
-    
-    writeReg(0x3E, 0xC0);  // PATABLE
-    
-    sendCmd(0x33);  // SCAL
+    sendCmd(0x33); // SCAL
     delay(5);
 }
 
@@ -293,11 +345,10 @@ void OpenPager::initCC1101RX(uint16_t baud) {
 void OpenPager::calcDataRate(uint16_t baud, uint8_t *mdm4, uint8_t *mdm3) {
     if (baud == 512) { *mdm4 = 0xF4; *mdm3 = 0x4B; }
     else if (baud == 2400) { *mdm4 = 0xF6; *mdm3 = 0x83; }
-    else { *mdm4 = 0xF5; *mdm3 = 0x83; }
+    else { *mdm4 = 0xF5; *mdm3 = 0x83; } // Default 1200
 }
 
-// ============== POCSAG TX Encoding Same as before ==============
-// (Helpers for TX)
+// POCSAG Internals
 uint32_t OpenPager::bchEncode(uint32_t data) {
     uint32_t cwE = data & 0xFFFFF800;
     for (int i = 0; i < 21; i++) {
@@ -366,7 +417,6 @@ uint8_t OpenPager::charToBcd(char c) {
     return 0x0C;
 }
 
-// TX helpers
 void OpenPager::sendBit(bool bit) {
     if (_invert) bit = !bit;
     digitalWrite(_gdo0, bit ? LOW : HIGH);

@@ -1,7 +1,7 @@
 #include "OpenPagerDecoder.h"
 #include <SPI.h> // For any shared defs if needed, though mostly math here
 
-OpenPagerDecoder::OpenPagerDecoder(uint16_t baud, PocsagCallback callback) 
+OpenPagerDecoder::OpenPagerDecoder(uint16_t baud, OpenPagerCallback callback) 
     : _baud(baud), _callback(callback), _invert(false), 
       _next_sample_time(0), _last_bit(false),
       _shift_reg(0), _bit_count(0),
@@ -168,7 +168,7 @@ void OpenPagerDecoder::processBatch() {
 void OpenPagerDecoder::finalizeMessage() {
     if (_msg_cw_count == 0) {
         // Tone Only
-        PocsagMessage msg;
+        OpenPagerMessage msg;
         msg.ric = _current_ric;
         msg.func = _current_func;
         msg.baudRate = _baud;
@@ -178,7 +178,7 @@ void OpenPagerDecoder::finalizeMessage() {
         msg.valid = true;
         if (_callback) _callback(msg);
     } else {
-        PocsagMessage msg;
+        OpenPagerMessage msg;
         msg.ric = _current_ric;
         msg.func = _current_func;
         msg.baudRate = _baud;
@@ -198,7 +198,7 @@ void OpenPagerDecoder::finalizeMessage() {
 
 // ... Decoding helpers ...
 
-void OpenPagerDecoder::decodeAlphaMessage(PocsagMessage& msg) {
+void OpenPagerDecoder::decodeAlphaMessage(OpenPagerMessage& msg) {
     uint64_t bitBuf = 0;
     uint8_t bitCount = 0;
     
@@ -225,7 +225,7 @@ void OpenPagerDecoder::decodeAlphaMessage(PocsagMessage& msg) {
     msg.text[msg.textLen] = '\0';
 }
 
-void OpenPagerDecoder::decodeNumericMessage(PocsagMessage& msg) {
+void OpenPagerDecoder::decodeNumericMessage(OpenPagerMessage& msg) {
     for (uint8_t i = 0; i < _msg_cw_count; i++) {
         uint32_t data = (_msg_cws[i] >> 11) & 0xFFFFF;
         for (int d = 4; d >= 0 && msg.textLen < 254; d--) {

@@ -5,7 +5,7 @@
 OpenPager pager(15, 5);
 
 // Callback for received messages
-void onMessage(PocsagMessage msg) {
+void onMessage(OpenPagerMessage msg) {
     Serial.println("\n========== MESSAGE ==========");
     Serial.printf("RIC: %lu\n", msg.ric);
     Serial.printf("Baud: %d\n", msg.baudRate);

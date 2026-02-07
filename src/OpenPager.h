@@ -6,7 +6,7 @@
 #include "OpenPagerDecoder.h"
 
 // Receiver buffer size (max messages in queue)
-#define POCSAG_RX_BUFFER_SIZE 4
+#define OPENPAGER_RX_BUFFER_SIZE 4
 
 class OpenPager {
 public:
@@ -22,8 +22,8 @@ public:
     void startReceive(uint16_t baud = 1200); // 0 = Auto
     void stopReceive();
     bool available();
-    PocsagMessage getMessage();
-    void setCallback(PocsagCallback cb);
+    OpenPagerMessage getMessage();
+    void setCallback(OpenPagerCallback cb);
     int16_t getRSSI();
     
     // Helpers (proxied to internal standard logic or removed if unused outside)
@@ -42,7 +42,7 @@ public:
     volatile uint32_t debugBatchCount;
     
     // Debug callback (optional)
-    void setDebugCallback(PocsagDebugCallback cb); // Deprecated/Not implemented in multi-decoder yet?
+    void setDebugCallback(OpenPagerDebugCallback cb); // Deprecated/Not implemented in multi-decoder yet?
 
 private:
     uint8_t _csn, _gdo0;
@@ -64,13 +64,13 @@ private:
     uint8_t _decoder_count;
 
     // Message ring buffer
-    PocsagMessage _rx_buffer[POCSAG_RX_BUFFER_SIZE];
+    OpenPagerMessage _rx_buffer[OPENPAGER_RX_BUFFER_SIZE];
     uint8_t _rx_head, _rx_tail;
-    PocsagCallback _rx_callback;
-    PocsagDebugCallback _debug_callback; // Not used in decoders yet
+    OpenPagerCallback _rx_callback;
+    OpenPagerDebugCallback _debug_callback; // Not used in decoders yet
 
     // Internal callback wrapper
-    static void staticCallback(PocsagMessage msg); // Trampoline
+    static void staticCallback(OpenPagerMessage msg); // Trampoline
 
     // CC1101 Driver
     void writeReg(uint8_t reg, uint8_t value);

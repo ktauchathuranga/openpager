@@ -8,31 +8,31 @@
 #define POCSAG_SYNC_INVERTED  0x832DEA27
 #define POCSAG_IDLE_CODE      0x7A89C197
 
-enum PocsagMode {
-    POCSAG_NUMERIC = 0,
-    POCSAG_ALPHA = 1
+enum OpenPagerMode {
+    OPENPAGER_NUMERIC = 0,
+    OPENPAGER_ALPHA = 1
 };
 
 // Received message structure
-struct PocsagMessage {
+struct OpenPagerMessage {
     uint32_t ric;        // Receiver ID Code (capcode)
     uint8_t func;        // Function (0-3)
     char text[256];      // Message text
     uint8_t textLen;     // Text length
     bool isNumeric;      // Numeric or alphanumeric
     bool valid;          // Valid message flag
-    uint16_t baudRate;   // Baud rate of the decoder
+    uint16_t baudRate;   // Baud rate
 };
 
 // Callback type for async message reception
-typedef void (*PocsagCallback)(PocsagMessage msg);
+typedef void (*OpenPagerCallback)(OpenPagerMessage msg);
 
-// Debug callback type - called after each batch with raw codewords
-typedef void (*PocsagDebugCallback)(uint32_t* codewords, uint8_t count);
+// Debug callback type
+typedef void (*OpenPagerDebugCallback)(uint32_t* codewords, uint8_t count);
 
 class OpenPagerDecoder {
 public:
-    OpenPagerDecoder(uint16_t baud, PocsagCallback callback);
+    OpenPagerDecoder(uint16_t baud, OpenPagerCallback callback);
     
     void process(uint32_t now, bool bit);
     void reset();
@@ -47,7 +47,7 @@ public:
 
 private:
     uint16_t _baud;
-    PocsagCallback _callback;
+    OpenPagerCallback _callback;
     bool _invert;
     
     // Timing
@@ -85,8 +85,8 @@ private:
     uint32_t bchRepair(uint32_t cw);
     uint32_t bchEncode(uint32_t data);
     
-    void decodeAlphaMessage(PocsagMessage& msg);
-    void decodeNumericMessage(PocsagMessage& msg);
+    void decodeAlphaMessage(OpenPagerMessage& msg);
+    void decodeNumericMessage(OpenPagerMessage& msg);
     char bcdToChar(uint8_t bcd);
 };
 

@@ -64,7 +64,7 @@ void loop() {
 
 OpenPager pager(15, 5);
 
-void onMessage(PocsagMessage msg) {
+void onMessage(OpenPagerMessage msg) {
     Serial.printf("[RIC: %lu] %s\n", msg.ric, msg.text);
 }
 
@@ -103,9 +103,9 @@ void loop() {
 | `setCallback(fn)` | Set async callback |
 | `getRSSI()` | Get signal strength |
 
-### PocsagMessage Structure
+### OpenPagerMessage Structure
 ```cpp
-struct PocsagMessage {
+struct OpenPagerMessage {
     uint32_t ric;      // Receiver ID
     uint8_t func;      // Function (0-3)
     char text[256];    // Message text
