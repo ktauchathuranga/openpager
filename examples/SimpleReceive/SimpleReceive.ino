@@ -11,11 +11,13 @@ void debugProcessBatch(uint32_t* codewords, uint8_t count) {
         bool isIdle = (cw == 0x7A89C197);
         bool isSync = (cw == 0x7CD215D8);
         bool isMsg = (cw >> 31) & 1;
+        bool bchOk = pager.bchCheck(cw);
         
-        Serial.printf("[%2d] 0x%08lX %s\n", i, cw, 
+        Serial.printf("[%2d] 0x%08lX %s %s\n", i, cw, 
                       isIdle ? "(IDLE)" : 
                       isSync ? "(SYNC)" : 
-                      isMsg ? "(MSG)" : "(ADDR)");
+                      isMsg ? "(MSG )" : "(ADDR)",
+                      bchOk ? "OK" : "FAIL");
     }
     Serial.println("-----------------\n");
 }

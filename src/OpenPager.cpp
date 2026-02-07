@@ -206,18 +206,29 @@ void OpenPager::processSample(bool bit) {
 }
 
 bool OpenPager::checkSyncWord() {
-    // Check normal polarity
-    if (_rx_shift_reg == POCSAG_SYNC_CODE) {
+    // Helper to count bit differences
+    auto bitDiff = [](uint32_t a, uint32_t b) {
+        uint32_t x = a ^ b;
+        uint32_t count = 0;
+        while (x) {
+            count++;
+            x &= (x - 1);
+        }
+        return count;
+    };
+
+    // Check normal polarity (allow 2 bit errors)
+    if (bitDiff(_rx_shift_reg, POCSAG_SYNC_CODE) <= 2) {
         _rx_inverted = false;
         return true;
     }
-    // Check inverted
-    if (_rx_shift_reg == POCSAG_SYNC_INVERTED) {
+    // Check inverted (allow 2 bit errors)
+    if (bitDiff(_rx_shift_reg, POCSAG_SYNC_INVERTED) <= 2) {
         _rx_inverted = true;
         return true;
     }
     // Check bit-inverted
-    if ((~_rx_shift_reg) == POCSAG_SYNC_CODE) {
+    if (bitDiff(~_rx_shift_reg, POCSAG_SYNC_CODE) <= 2) {
         _rx_inverted = true;
         return true;
     }
@@ -479,19 +490,9 @@ uint8_t OpenPager::charToBcd(char c) {
 // ============== POCSAG RX Decoding ==============
 
 bool OpenPager::bchCheck(uint32_t cw) {
-    // Even parity check
-    uint32_t p = 0;
-    uint32_t temp = cw;
-    while (temp) { p ^= (temp & 1); temp >>= 1; }
-    if (p) return false;
-    
-    // BCH syndrome check
-    uint32_t data = cw;
-    for (int i = 0; i < 21; i++) {
-        if (data & 0x80000000) data ^= 0xED200000;
-        data <<= 1;
-    }
-    return ((data >> 21) == 0);
+    // Re-calculate BCH and parity from the data bits
+    // If the received codeword is valid, it must match the re-encoded version exactly
+    return (bchEncode(cw) == cw);
 }
 
 char OpenPager::bcdToChar(uint8_t bcd) {

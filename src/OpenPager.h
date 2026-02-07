@@ -50,6 +50,7 @@ public:
     PocsagMessage getMessage();
     void setCallback(PocsagCallback cb);
     int16_t getRSSI();
+    bool bchCheck(uint32_t codeword);
     
     // Must call this in loop() for RX to work
     void loop();
@@ -126,7 +127,6 @@ private:
     // POCSAG Decoding (RX)
     void processSample(bool bit);
     bool checkSyncWord();
-    bool bchCheck(uint32_t codeword);
     void processBatch();
     void finalizeMessage();
     void decodeAlphaMessage();
