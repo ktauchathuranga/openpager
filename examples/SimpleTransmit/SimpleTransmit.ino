@@ -17,6 +17,14 @@ void setup() {
     Serial.println("Initializing OpenPager...");
     pager.begin(433.920, 1200);
     
+    // Set TX power (optional — defaults to max)
+    // Available levels: OPENPAGER_TX_POWER_MIN   (-30 dBm)
+    //                   OPENPAGER_TX_POWER_LOW   (-20 dBm)
+    //                   OPENPAGER_TX_POWER_MEDIUM (-10 dBm)
+    //                   OPENPAGER_TX_POWER_HIGH  (  0 dBm)
+    //                   OPENPAGER_TX_POWER_MAX   (+10 dBm) ← default
+    pager.setTxPower(OPENPAGER_TX_POWER_MAX);
+    
     Serial.println("Ready to transmit!");
 }
 
