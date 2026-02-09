@@ -35,6 +35,7 @@ public:
     OpenPagerDecoder(uint16_t baud, OpenPagerCallback callback);
     
     void process(uint32_t now, bool bit);
+    void processEdgeData(const uint32_t* durations_us, const bool* levels, size_t count);
     void reset();
     
     // Config

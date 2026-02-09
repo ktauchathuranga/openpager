@@ -4,6 +4,9 @@
 // Adjust pins for your board!
 OpenPager pager(15, 5);
 
+// For dual-radio mode (dedicated RX + TX CC1101):
+// OpenPager pager(CSN_RX, GDO0_RX, CSN_TX, GDO0_TX);
+
 // Callback for received messages
 void onMessage(OpenPagerMessage msg) {
     Serial.println("\n========== MESSAGE ==========");
@@ -32,6 +35,13 @@ void setup() {
     // Register callback
     pager.setCallback(onMessage);
     
+    // CAP code filtering (optional — omit to receive ALL messages)
+    // Only messages addressed to these RICs will be delivered:
+    // pager.addCapFilter(1234567);
+    // pager.addCapFilter(2000000);
+    // pager.removeCapFilter(2000000);  // remove a single filter
+    // pager.clearCapFilter();          // remove all filters (back to accept-all)
+    
     // Start Listening
     pager.startReceive(baud);
     
@@ -39,7 +49,9 @@ void setup() {
 }
 
 void loop() {
-    // You must call loop() frequently to process radio data!
+    // Process radio data.
+    // On ESP32: RMT hardware captures edges in the background — loop() timing is NOT critical.
+    // On other platforms: call loop() as frequently as possible for accurate bit sampling.
     pager.loop();
     
     // Print stats every 5 seconds

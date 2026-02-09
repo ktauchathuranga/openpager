@@ -1,7 +1,13 @@
 #include <OpenPager.h>
 
+// ---- Single Radio Mode (default) ----
 // CSN = Pin 15 (D8 on many ESP nodes), GDO0 = Pin 5 (D1)
 OpenPager pager(15, 5);
+
+// ---- Dual Radio Mode (optional) ----
+// Dedicated RX and TX CC1101 modules — RX never stops during TX.
+// OpenPager pager(CSN_RX, GDO0_RX, CSN_TX, GDO0_TX);
+// OpenPager pager(15, 5, 4, 2);
 
 void setup() {
     Serial.begin(115200);
@@ -10,6 +16,17 @@ void setup() {
     // Initialize pager at 433.920 MHz, 1200 baud
     Serial.println("Initializing OpenPager...");
     pager.begin(433.920, 1200);
+    
+    // Set TX power (optional — defaults to max)
+    // Available levels: OPENPAGER_TX_POWER_MIN   (-30 dBm)
+    //                   OPENPAGER_TX_POWER_LOW   (-20 dBm)
+    //                   OPENPAGER_TX_POWER_MEDIUM (-10 dBm)
+    //                   OPENPAGER_TX_POWER_HIGH  (  0 dBm)
+    //                   OPENPAGER_TX_POWER_MAX   (+10 dBm) ← default
+    pager.setTxPower(OPENPAGER_TX_POWER_MAX);
+    
+    // Note: CAP/RIC filtering is an RX-side feature.
+    // The RIC value in transmit() is the destination address.
     
     Serial.println("Ready to transmit!");
 }
