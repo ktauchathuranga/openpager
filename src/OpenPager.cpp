@@ -6,6 +6,9 @@ static OpenPager* g_openPager = nullptr;
 // Trampoline callback implementation
 void OpenPager::staticCallback(OpenPagerMessage msg) {
     if (g_openPager) {
+        // CAP code filtering: drop messages not in the allow list
+        if (!g_openPager->passesCapFilter(msg.ric)) return;
+        
         // Now valid: static member accessing private member of instance
         if (g_openPager->_rx_callback) {
              g_openPager->_rx_callback(msg);
@@ -30,6 +33,7 @@ OpenPager::OpenPager(uint8_t csn_pin, uint8_t gdo0_pin) :
     _rx_active(false), _rx_config_baud(1200),
     _decoder_count(0),
     _rx_head(0), _rx_tail(0), _rx_callback(nullptr), _debug_callback(nullptr),
+    _filter_count(0),
     debugSampleCount(0), debugPreambleCount(0), debugSyncCount(0), debugBatchCount(0)
 #ifdef ESP32
     , _rmt_rx_buf(nullptr), _rmt_rx_sym_count(0), _rmt_rx_reading(false)
@@ -49,6 +53,7 @@ OpenPager::OpenPager(uint8_t csn_rx, uint8_t gdo0_rx, uint8_t csn_tx, uint8_t gd
     _rx_active(false), _rx_config_baud(1200),
     _decoder_count(0),
     _rx_head(0), _rx_tail(0), _rx_callback(nullptr), _debug_callback(nullptr),
+    _filter_count(0),
     debugSampleCount(0), debugPreambleCount(0), debugSyncCount(0), debugBatchCount(0)
 #ifdef ESP32
     , _rmt_rx_buf(nullptr), _rmt_rx_sym_count(0), _rmt_rx_reading(false)
@@ -285,6 +290,40 @@ void OpenPager::setCallback(OpenPagerCallback cb) {
 
 void OpenPager::setDebugCallback(OpenPagerDebugCallback cb) {
     _debug_callback = cb;
+}
+
+void OpenPager::addCapFilter(uint32_t ric) {
+    if (_filter_count >= OPENPAGER_MAX_CAP_FILTERS) return;
+    // Avoid duplicates
+    for (uint8_t i = 0; i < _filter_count; i++) {
+        if (_cap_filters[i] == ric) return;
+    }
+    _cap_filters[_filter_count++] = ric;
+}
+
+void OpenPager::removeCapFilter(uint32_t ric) {
+    for (uint8_t i = 0; i < _filter_count; i++) {
+        if (_cap_filters[i] == ric) {
+            // Shift remaining entries down
+            for (uint8_t j = i; j < _filter_count - 1; j++) {
+                _cap_filters[j] = _cap_filters[j + 1];
+            }
+            _filter_count--;
+            return;
+        }
+    }
+}
+
+void OpenPager::clearCapFilter() {
+    _filter_count = 0;
+}
+
+bool OpenPager::passesCapFilter(uint32_t ric) const {
+    if (_filter_count == 0) return true;  // No filters = accept all
+    for (uint8_t i = 0; i < _filter_count; i++) {
+        if (_cap_filters[i] == ric) return true;
+    }
+    return false;
 }
 
 int16_t OpenPager::getRSSI() {

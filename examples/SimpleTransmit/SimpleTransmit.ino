@@ -25,6 +25,9 @@ void setup() {
     //                   OPENPAGER_TX_POWER_MAX   (+10 dBm) ← default
     pager.setTxPower(OPENPAGER_TX_POWER_MAX);
     
+    // Note: CAP/RIC filtering is an RX-side feature.
+    // The RIC value in transmit() is the destination address.
+    
     Serial.println("Ready to transmit!");
 }
 

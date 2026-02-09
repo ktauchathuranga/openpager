@@ -35,6 +35,13 @@ void setup() {
     // Register callback
     pager.setCallback(onMessage);
     
+    // CAP code filtering (optional — omit to receive ALL messages)
+    // Only messages addressed to these RICs will be delivered:
+    // pager.addCapFilter(1234567);
+    // pager.addCapFilter(2000000);
+    // pager.removeCapFilter(2000000);  // remove a single filter
+    // pager.clearCapFilter();          // remove all filters (back to accept-all)
+    
     // Start Listening
     pager.startReceive(baud);
     

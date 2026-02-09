@@ -13,6 +13,9 @@
 // Receiver buffer size (max messages in queue)
 #define OPENPAGER_RX_BUFFER_SIZE 4
 
+// Max number of CAP code (RIC) filters
+#define OPENPAGER_MAX_CAP_FILTERS 16
+
 // RMT configuration
 #ifdef ESP32
 #define OPENPAGER_RMT_RX_BUF_SYMBOLS 512
@@ -49,6 +52,14 @@ public:
     OpenPagerMessage getMessage();
     void setCallback(OpenPagerCallback cb);
     int16_t getRSSI();
+    
+    // CAP Code (RIC) Filtering
+    // When filters are set, only messages matching a registered RIC are delivered.
+    // With no filters, all messages pass through (default).
+    void addCapFilter(uint32_t ric);          // Add a RIC to the allow list
+    void removeCapFilter(uint32_t ric);       // Remove a RIC from the allow list
+    void clearCapFilter();                    // Clear all filters (accept all)
+    uint8_t getCapFilterCount() const { return _filter_count; }
     
     // Helpers (proxied to internal standard logic or removed if unused outside)
     // kept for compatibility if needed, otherwise removed
@@ -132,6 +143,11 @@ private:
     uint8_t _rx_head, _rx_tail;
     OpenPagerCallback _rx_callback;
     OpenPagerDebugCallback _debug_callback; // Not used in decoders yet
+    
+    // CAP code (RIC) filter list
+    uint32_t _cap_filters[OPENPAGER_MAX_CAP_FILTERS];
+    uint8_t _filter_count;
+    bool passesCapFilter(uint32_t ric) const;
 
     // Internal callback wrapper
     static void staticCallback(OpenPagerMessage msg); // Trampoline

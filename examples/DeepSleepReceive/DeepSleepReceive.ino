@@ -39,6 +39,10 @@ void setup() {
     pager.begin(freq, baud);
     pager.setCallback(onMessage);
 
+    // CAP code filtering (optional — omit to receive ALL messages)
+    // Only deliver messages addressed to these RICs:
+    // pager.addCapFilter(1234567);
+
     // Enable deep sleep wakeup via GDO2 (carrier sense)
     // This configures CC1101 GDO2 pin to output carrier sense signal.
     pager.setWakePin(GDO2_PIN);
