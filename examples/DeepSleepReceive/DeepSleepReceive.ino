@@ -1,5 +1,10 @@
 #include <OpenPager.h>
 
+// This example is ESP32 only — deep sleep requires RTC GPIOs and esp_sleep.
+#ifndef ESP32
+#error "DeepSleepReceive requires ESP32. Use SimpleReceive for other platforms."
+#endif
+
 // CSN = Pin 15, GDO0 = Pin 5 (data), GDO2 = Pin 4 (carrier sense → wake)
 // GDO2 must be connected to an RTC-capable GPIO on ESP32.
 // RTC GPIOs: 0, 2, 4, 12, 13, 14, 15, 25, 26, 27, 32, 33, 34, 35, 36, 39

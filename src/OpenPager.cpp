@@ -3,6 +3,22 @@
 // Global instance pointer for callback trampoline
 static OpenPager* g_openPager = nullptr;
 
+// Forward declaration of timer ISR (ESP32 and ESP8266 RX)
+#if defined(ESP32) || defined(ESP8266)
+void IRAM_ATTR _openPagerTimerISR();
+
+// --- Static timer sample ring buffer (shared between ISR and loop) ---
+static volatile uint32_t s_timer_timestamps[OPENPAGER_TIMER_BUF_SIZE];
+static volatile uint8_t  s_timer_bits[OPENPAGER_TIMER_BUF_SIZE];
+static volatile uint16_t s_timer_head = 0;     // written by ISR
+static volatile uint16_t s_timer_tail = 0;     // read by loop()
+static volatile uint8_t  s_timer_pin = 0;
+#endif
+
+#ifdef ESP32
+static hw_timer_t*       s_hw_timer = nullptr;
+#endif
+
 // Trampoline callback implementation
 void OpenPager::staticCallback(OpenPagerMessage msg) {
     if (g_openPager) {
@@ -35,8 +51,8 @@ OpenPager::OpenPager(uint8_t csn_pin, uint8_t gdo0_pin) :
     _rx_head(0), _rx_tail(0), _rx_callback(nullptr), _debug_callback(nullptr),
     _filter_count(0),
     debugSampleCount(0), debugPreambleCount(0), debugSyncCount(0), debugBatchCount(0)
-#ifdef ESP32
-    , _rmt_rx_buf(nullptr), _rmt_rx_sym_count(0), _rmt_rx_reading(false)
+#if defined(ESP32) || defined(ESP8266)
+    , _timer_rx_active(false)
 #endif
 {
     g_openPager = this;
@@ -55,8 +71,8 @@ OpenPager::OpenPager(uint8_t csn_rx, uint8_t gdo0_rx, uint8_t csn_tx, uint8_t gd
     _rx_head(0), _rx_tail(0), _rx_callback(nullptr), _debug_callback(nullptr),
     _filter_count(0),
     debugSampleCount(0), debugPreambleCount(0), debugSyncCount(0), debugBatchCount(0)
-#ifdef ESP32
-    , _rmt_rx_buf(nullptr), _rmt_rx_sym_count(0), _rmt_rx_reading(false)
+#if defined(ESP32) || defined(ESP8266)
+    , _timer_rx_active(false)
 #endif
 {
     g_openPager = this;
@@ -89,7 +105,14 @@ void OpenPager::begin(float freq_mhz, uint16_t baud) {
         digitalWrite(_csn_tx, HIGH);
     }
     
+#ifdef ESP32
+    // ESP32's default SPI.begin() claims GPIO 5 as SS (OUTPUT HIGH).
+    // This conflicts with GDO0 if connected to GPIO 5, causing bus
+    // contention with the CC1101. Pass -1 for SS to prevent this.
+    SPI.begin(SCK, MISO, MOSI, -1);
+#else
     SPI.begin();
+#endif
     
     // Init the TX radio (or single radio in non-dual mode)
     swapToTxRadio();
@@ -220,21 +243,27 @@ void OpenPager::startReceive(uint16_t baud) {
         _decoders[i]->setInvert(_invert);
     }
 
+#if defined(ESP32) || defined(ESP8266)
+    // Hardware timer samples GDO0 at a fixed rate (~19.2 kHz).
+    // CC1101 async serial outputs a continuous bitstream (even noise),
+    // so RMT (needs idle gaps) and edge ISR (noise inflates bit counts)
+    // don't work. Timer sampling feeds the proven process() method.
+    // On ESP8266 this uses Timer1 — do NOT use Servo or analogWrite.
+    s_timer_pin = _gdo0;
+    s_timer_head = 0;
+    s_timer_tail = 0;
+    _timer_rx_active = true;
+    pinMode(_gdo0, INPUT);
+    
 #ifdef ESP32
-    // Use RMT hardware for edge capture — no polling needed
-    if (!rmtInit(_gdo0, RMT_RX_MODE, RMT_MEM_NUM_BLOCKS_2, OPENPAGER_RMT_TICK_FREQ)) {
-        // Fallback: treat as non-ESP32 path
-        pinMode(_gdo0, INPUT);
-        _rmt_rx_reading = false;
-    } else {
-        rmtSetRxMinThreshold(_gdo0, 10);    // Filter glitches < 10 µs
-        rmtSetRxMaxThreshold(_gdo0, 50000);  // Idle timeout 50 ms
-        
-        _rmt_rx_buf = new rmt_data_t[OPENPAGER_RMT_RX_BUF_SYMBOLS];
-        _rmt_rx_sym_count = OPENPAGER_RMT_RX_BUF_SYMBOLS;
-        rmtReadAsync(_gdo0, _rmt_rx_buf, &_rmt_rx_sym_count);
-        _rmt_rx_reading = true;
-    }
+    s_hw_timer = timerBegin(1000000);  // 1 MHz timer clock
+    timerAttachInterrupt(s_hw_timer, &_openPagerTimerISR);
+    timerAlarm(s_hw_timer, OPENPAGER_TIMER_INTERVAL_US, true, 0);  // periodic, infinite
+#else // ESP8266 — Timer1 at 5 MHz (TIM_DIV16)
+    timer1_attachInterrupt(_openPagerTimerISR);
+    timer1_enable(TIM_DIV16, TIM_EDGE, TIM_LOOP);
+    timer1_write(5 * OPENPAGER_TIMER_INTERVAL_US);  // 260 ticks @ 5 MHz = 52 µs
+#endif
 #else
     // GDO0 as input (polling mode)
     pinMode(_gdo0, INPUT);
@@ -247,14 +276,18 @@ void OpenPager::stopReceive() {
         _rx_active = false;
         sendCmd(0x36);  // SIDLE
 
+#if defined(ESP32) || defined(ESP8266)
+        if (_timer_rx_active) {
 #ifdef ESP32
-        if (_rmt_rx_reading) {
-            rmtDeinit(_gdo0);
-            _rmt_rx_reading = false;
-        }
-        if (_rmt_rx_buf) {
-            delete[] _rmt_rx_buf;
-            _rmt_rx_buf = nullptr;
+            timerAlarm(s_hw_timer, 0, false, 0);  // Stop alarm
+            timerDetachInterrupt(s_hw_timer);
+            timerEnd(s_hw_timer);
+            s_hw_timer = nullptr;
+#else // ESP8266
+            timer1_disable();
+            timer1_detachInterrupt();
+#endif
+            _timer_rx_active = false;
         }
 #endif
     }
@@ -342,15 +375,11 @@ int16_t OpenPager::getRSSI() {
 void OpenPager::loop() {
     if (!_rx_active || _decoder_count == 0) return;
     
-#ifdef ESP32
-    // RMT hardware captures edges in the background.
-    // We just check if a capture completed, process it, and re-arm.
-    if (_rmt_rx_reading && rmtReceiveCompleted(_gdo0)) {
-        processRmtEdges();
-        
-        // Re-arm for next capture
-        _rmt_rx_sym_count = OPENPAGER_RMT_RX_BUF_SYMBOLS;
-        rmtReadAsync(_gdo0, _rmt_rx_buf, &_rmt_rx_sym_count);
+#if defined(ESP32) || defined(ESP8266)
+    // Hardware timer captures GDO0 samples into a ring buffer at ~19.2 kHz.
+    // We drain it here and feed each sample to the decoders via process().
+    if (_timer_rx_active) {
+        processTimerSamples();
     }
 #else
     // Legacy polling mode: must be called as fast as possible
@@ -593,42 +622,47 @@ void OpenPager::sendWord(uint32_t word) {
 #endif
 }
 
-// ============== ESP32 RMT Implementation ==============
+// ============== Hardware Timer RX (ESP32 + ESP8266) ==============
+
+#if defined(ESP32) || defined(ESP8266)
+
+void IRAM_ATTR _openPagerTimerISR() {
+    uint16_t next = (s_timer_head + 1) & (OPENPAGER_TIMER_BUF_SIZE - 1);
+    if (next != s_timer_tail) {  // Drop if buffer full
+        s_timer_timestamps[s_timer_head] = micros();
+        s_timer_bits[s_timer_head] = digitalRead(s_timer_pin);
+        s_timer_head = next;
+    }
+}
+
+void OpenPager::processTimerSamples() {
+    // Snapshot head (ISR can advance it at any time)
+    uint16_t head = s_timer_head;
+    uint16_t tail = s_timer_tail;
+    
+    if (head == tail) return;  // Nothing to process
+    
+    // Drain all available samples
+    while (tail != head) {
+        uint32_t ts = s_timer_timestamps[tail];
+        bool bit = s_timer_bits[tail];
+        tail = (tail + 1) & (OPENPAGER_TIMER_BUF_SIZE - 1);
+        
+        // Feed all decoders
+        for (uint8_t i = 0; i < _decoder_count; i++) {
+            _decoders[i]->process(ts, bit);
+        }
+    }
+    
+    // Update tail (atomically safe — ISR only writes head)
+    s_timer_tail = tail;
+}
+
+#endif // ESP32 || ESP8266
+
+// ============== ESP32 RMT TX + Deep Sleep ==============
 
 #ifdef ESP32
-
-void OpenPager::processRmtEdges() {
-    if (_rmt_rx_sym_count == 0) return;
-    
-    // Convert RMT symbols to flat duration/level arrays for decoders.
-    // Each rmt_data_t has two half-symbols: (level0,duration0) and (level1,duration1).
-    // Max entries = _rmt_rx_sym_count * 2.
-    size_t maxPulses = _rmt_rx_sym_count * 2;
-    uint32_t* durations = new uint32_t[maxPulses];
-    bool* levels = new bool[maxPulses];
-    size_t count = 0;
-    
-    for (size_t i = 0; i < _rmt_rx_sym_count; i++) {
-        if (_rmt_rx_buf[i].duration0 > 0) {
-            durations[count] = _rmt_rx_buf[i].duration0;  // already in µs at 1 MHz tick
-            levels[count] = _rmt_rx_buf[i].level0;
-            count++;
-        }
-        if (_rmt_rx_buf[i].duration1 > 0) {
-            durations[count] = _rmt_rx_buf[i].duration1;
-            levels[count] = _rmt_rx_buf[i].level1;
-            count++;
-        }
-    }
-    
-    // Feed all decoders with the same edge data
-    for (uint8_t i = 0; i < _decoder_count; i++) {
-        _decoders[i]->processEdgeData(durations, levels, count);
-    }
-    
-    delete[] durations;
-    delete[] levels;
-}
 
 void OpenPager::transmitRmt(uint32_t ric, uint8_t func, String msg, uint16_t baud, bool alpha) {
     if (baud != _last_baud) {
@@ -763,14 +797,13 @@ void OpenPager::setWakePin(uint8_t gdo2_pin) {
 void OpenPager::sleep() {
     if (!_wake_enabled) return;
     
-    // Stop RMT but keep CC1101 in RX mode (don't send SIDLE)
-    if (_rmt_rx_reading) {
-        rmtDeinit(_gdo0);
-        _rmt_rx_reading = false;
-    }
-    if (_rmt_rx_buf) {
-        delete[] _rmt_rx_buf;
-        _rmt_rx_buf = nullptr;
+    // Stop timer but keep CC1101 in RX mode (don't send SIDLE)
+    if (_timer_rx_active) {
+        timerAlarm(s_hw_timer, 0, false, 0);
+        timerDetachInterrupt(s_hw_timer);
+        timerEnd(s_hw_timer);
+        s_hw_timer = nullptr;
+        _timer_rx_active = false;
     }
     
     // Delete decoders to free RAM (they'll be recreated on wake)

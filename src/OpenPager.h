@@ -10,16 +10,33 @@
 #include "esp_sleep.h"
 #endif
 
+#ifdef ESP8266
+extern "C" {
+#include "user_interface.h"
+}
+#endif
+
 // Receiver buffer size (max messages in queue)
 #define OPENPAGER_RX_BUFFER_SIZE 4
 
 // Max number of CAP code (RIC) filters
 #define OPENPAGER_MAX_CAP_FILTERS 16
 
-// RMT configuration
+// RMT configuration (TX only, ESP32)
 #ifdef ESP32
-#define OPENPAGER_RMT_RX_BUF_SYMBOLS 512
-#define OPENPAGER_RMT_TICK_FREQ      1000000  // 1 MHz = 1 µs resolution
+#define OPENPAGER_RMT_TICK_FREQ        1000000  // 1 MHz = 1 µs resolution
+#endif
+
+// Hardware timer RX sampling (ESP32 and ESP8266)
+// Samples GDO0 at ~19.2 kHz (8× 2400 baud) for non-blocking reception.
+// On ESP8266 this uses Timer1 — incompatible with Servo and analogWrite.
+#if defined(ESP32) || defined(ESP8266)
+#ifdef ESP32
+#define OPENPAGER_TIMER_BUF_SIZE       4096     // Timer sample ring buffer (power of 2)
+#else
+#define OPENPAGER_TIMER_BUF_SIZE       2048     // Smaller buffer for ESP8266 (RAM constrained)
+#endif
+#define OPENPAGER_TIMER_INTERVAL_US    52       // ~19.2 kHz (8x 2400 baud)
 #endif
 
 // CC1101 TX power levels (PATABLE values for 433 MHz)
@@ -176,13 +193,13 @@ private:
     void buildPocsagBitstream(uint32_t ric, uint8_t func, String msg, uint16_t baud, bool alpha,
                               bool** outBits, size_t* outCount);
 
+#if defined(ESP32) || defined(ESP8266)
+    // Hardware timer RX (samples GDO0 at fixed rate, feeds process())
+    bool _timer_rx_active;
+    void processTimerSamples();
+#endif
+
 #ifdef ESP32
-    // RMT RX
-    rmt_data_t* _rmt_rx_buf;
-    size_t _rmt_rx_sym_count;
-    bool _rmt_rx_reading;
-    void processRmtEdges();
-    
     // RMT TX
     void transmitRmt(uint32_t ric, uint8_t func, String msg, uint16_t baud, bool alpha);
 #endif

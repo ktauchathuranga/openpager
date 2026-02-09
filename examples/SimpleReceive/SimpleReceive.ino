@@ -4,6 +4,14 @@
 // Adjust pins for your board!
 OpenPager pager(15, 5);
 
+// LED heartbeat — proves loop() is free while the timer ISR handles sampling.
+// On ESP32/ESP8266 this blinks steadily even during message reception.
+#ifndef LED_BUILTIN
+#define LED_BUILTIN 2
+#endif
+#define HEARTBEAT_LED LED_BUILTIN
+#define HEARTBEAT_MS  500
+
 // For dual-radio mode (dedicated RX + TX CC1101):
 // OpenPager pager(CSN_RX, GDO0_RX, CSN_TX, GDO0_TX);
 
@@ -22,6 +30,8 @@ void setup() {
     Serial.begin(115200);   
     delay(1000);
     
+    pinMode(HEARTBEAT_LED, OUTPUT);
+
     Serial.println("================================");
     Serial.println("  OPENPAGER RX DEMO             ");
     Serial.println("================================");
@@ -50,10 +60,23 @@ void setup() {
 
 void loop() {
     // Process radio data.
-    // On ESP32: RMT hardware captures edges in the background — loop() timing is NOT critical.
+    // On ESP32/ESP8266: hardware timer samples in the background — loop() timing is NOT critical.
     // On other platforms: call loop() as frequently as possible for accurate bit sampling.
+    // Note: ESP8266 timer RX uses Timer1 — do NOT use Servo or analogWrite.
     pager.loop();
     
+    // --- Non-blocking heartbeat LED ---
+    // Toggles every 500 ms without delay(). On ESP32/ESP8266 the hardware
+    // timer samples GDO0 in the background, so this blink stays rock-steady
+    // even while messages are being decoded.
+    static uint32_t lastBlink = 0;
+    static bool ledState = false;
+    if (millis() - lastBlink >= HEARTBEAT_MS) {
+        lastBlink = millis();
+        ledState = !ledState;
+        digitalWrite(HEARTBEAT_LED, ledState);
+    }
+
     // Print stats every 5 seconds
     static uint32_t lastStats = 0;
     if (millis() - lastStats > 5000) {
