@@ -2,6 +2,9 @@
 
 OpenPager is a high-precision POCSAG (pager) transceiver library for Arduino-compatible microcontrollers (ESP8266, ESP32, etc.) and the TI CC1101 radio transceiver. It provides a robust implementation of the POCSAG protocol for both **transmitting** and **receiving** messages.
 
+[![PlatformIO Registry](https://badges.registry.platformio.org/packages/ktauchathuranga/library/OpenPager.svg)](https://registry.platformio.org/libraries/ktauchathuranga/OpenPager)
+[![arduino-library-badge](https://www.ardu-badge.com/badge/OpenPager.svg?)](https://www.ardu-badge.com/OpenPager)
+
 ## Features
 
 - **RX & TX**: Full duplex support - transmit and receive POCSAG messages
