@@ -18,6 +18,14 @@
 #define OPENPAGER_RMT_TICK_FREQ      1000000  // 1 MHz = 1 µs resolution
 #endif
 
+// CC1101 TX power levels (PATABLE values for 433 MHz)
+// Approximate output power in dBm (varies slightly by board/antenna)
+#define OPENPAGER_TX_POWER_MIN     0x12  // -30 dBm
+#define OPENPAGER_TX_POWER_LOW     0x0E  // -20 dBm
+#define OPENPAGER_TX_POWER_MEDIUM  0x27  // -10 dBm
+#define OPENPAGER_TX_POWER_HIGH    0x50  //   0 dBm
+#define OPENPAGER_TX_POWER_MAX     0xC0  // +10 dBm (default)
+
 class OpenPager {
 public:
     // Single radio (TX and RX share one CC1101)
@@ -31,6 +39,7 @@ public:
     void transmit(uint32_t ric, uint8_t func, String msg, uint16_t baud = 1200, bool alpha = true);
     void setInvert(bool invert);
     void setFreq(float freq_mhz);
+    void setTxPower(uint8_t power);  // Use OPENPAGER_TX_POWER_* constants or raw PATABLE byte
 
     // RX API
     void startReceive(uint16_t baud = 1200); // 0 = Auto
@@ -73,6 +82,9 @@ private:
     void swapToTxRadio();   // Temporarily point _csn/_gdo0 to TX radio
     void restoreRxRadio();  // Restore _csn/_gdo0 to RX radio
     uint8_t _saved_csn, _saved_gdo0;  // Saved during swap
+    
+    // TX power
+    uint8_t _tx_power;
     
     // TX timing
     uint32_t _bit_start_us;

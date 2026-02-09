@@ -23,6 +23,7 @@ void OpenPager::staticCallback(OpenPagerMessage msg) {
 OpenPager::OpenPager(uint8_t csn_pin, uint8_t gdo0_pin) : 
     _csn(csn_pin), _gdo0(gdo0_pin), _freq(433.920), _last_baud(0), _invert(false),
     _dual_mode(false), _csn_tx(0), _gdo0_tx(0), _saved_csn(0), _saved_gdo0(0),
+    _tx_power(OPENPAGER_TX_POWER_MAX),
     _rx_active(false), _rx_config_baud(1200),
     _decoder_count(0),
     _rx_head(0), _rx_tail(0), _rx_callback(nullptr), _debug_callback(nullptr),
@@ -38,6 +39,7 @@ OpenPager::OpenPager(uint8_t csn_pin, uint8_t gdo0_pin) :
 OpenPager::OpenPager(uint8_t csn_rx, uint8_t gdo0_rx, uint8_t csn_tx, uint8_t gdo0_tx) : 
     _csn(csn_rx), _gdo0(gdo0_rx), _freq(433.920), _last_baud(0), _invert(false),
     _dual_mode(true), _csn_tx(csn_tx), _gdo0_tx(gdo0_tx), _saved_csn(0), _saved_gdo0(0),
+    _tx_power(OPENPAGER_TX_POWER_MAX),
     _rx_active(false), _rx_config_baud(1200),
     _decoder_count(0),
     _rx_head(0), _rx_tail(0), _rx_callback(nullptr), _debug_callback(nullptr),
@@ -88,6 +90,14 @@ void OpenPager::begin(float freq_mhz, uint16_t baud) {
 
 void OpenPager::setInvert(bool invert) {
     _invert = invert;
+}
+
+void OpenPager::setTxPower(uint8_t power) {
+    _tx_power = power;
+    // Update the TX radio immediately if already initialized
+    swapToTxRadio();
+    writeReg(0x3E, _tx_power);
+    restoreRxRadio();
 }
 
 void OpenPager::setFreq(float freq_mhz) {
@@ -365,7 +375,7 @@ void OpenPager::initCC1101TX(uint16_t baud) {
     writeReg(0x24, 0x2A); // FSCAL2
     writeReg(0x25, 0x00); // FSCAL1
     writeReg(0x26, 0x1F); // FSCAL0
-    writeReg(0x3E, 0xC0); // PATABLE: Max Power
+    writeReg(0x3E, _tx_power); // PATABLE: TX Power
     
     sendCmd(0x33); // SCAL
     delay(5);
