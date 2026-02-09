@@ -32,6 +32,30 @@ void OpenPagerDecoder::setInvert(bool invert) {
     _invert = invert;
 }
 
+void OpenPagerDecoder::processEdgeData(const uint32_t* durations_us, const bool* levels, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        bool level = levels[i];
+        if (_invert) level = !level;
+        
+        uint32_t duration = durations_us[i];
+        // Calculate how many bits this pulse represents at our baud rate
+        double bits_f = (double)duration / _bit_period_us;
+        uint32_t numBits = (uint32_t)(bits_f + 0.5); // round
+        if (numBits == 0) numBits = 1;
+        if (numBits > 64) numBits = 64; // sanity cap
+        
+        for (uint32_t b = 0; b < numBits; b++) {
+            debugSampleCount++;
+            processSample(level);
+        }
+    }
+    
+    // Check message timeout after processing all edges
+    if (_in_message && _msg_cw_count > 0) {
+        finalizeMessage();
+    }
+}
+
 void OpenPagerDecoder::process(uint32_t now, bool bit) {
     // User inversion setting
     if (_invert) bit = !bit;

@@ -5,12 +5,26 @@
 #include <SPI.h>
 #include "OpenPagerDecoder.h"
 
+#ifdef ESP32
+#include "esp32-hal-rmt.h"
+#endif
+
 // Receiver buffer size (max messages in queue)
 #define OPENPAGER_RX_BUFFER_SIZE 4
 
+// RMT configuration
+#ifdef ESP32
+#define OPENPAGER_RMT_RX_BUF_SYMBOLS 512
+#define OPENPAGER_RMT_TICK_FREQ      1000000  // 1 MHz = 1 µs resolution
+#endif
+
 class OpenPager {
 public:
+    // Single radio (TX and RX share one CC1101)
     OpenPager(uint8_t csn_pin, uint8_t gdo0_pin);
+    
+    // Dual radio (dedicated RX and TX CC1101 modules — RX never stops during TX)
+    OpenPager(uint8_t csn_rx, uint8_t gdo0_rx, uint8_t csn_tx, uint8_t gdo0_tx);
     
     // TX API
     void begin(float freq_mhz = 433.920, uint16_t baud = 1200);
@@ -44,11 +58,21 @@ public:
     // Debug callback (optional)
     void setDebugCallback(OpenPagerDebugCallback cb); // Deprecated/Not implemented in multi-decoder yet?
 
+    // Query dual-radio mode
+    bool isDualRadio() const { return _dual_mode; }
+
 private:
     uint8_t _csn, _gdo0;
     float _freq;
     uint16_t _last_baud;
     bool _invert;
+    
+    // Dual-radio support
+    uint8_t _csn_tx, _gdo0_tx;
+    bool _dual_mode;
+    void swapToTxRadio();   // Temporarily point _csn/_gdo0 to TX radio
+    void restoreRxRadio();  // Restore _csn/_gdo0 to RX radio
+    uint8_t _saved_csn, _saved_gdo0;  // Saved during swap
     
     // TX timing
     uint32_t _bit_start_us;
@@ -91,6 +115,21 @@ private:
     // TX
     void sendBit(bool bit);
     void sendWord(uint32_t word);
+    
+    // Build full POCSAG bitstream into a bool array (shared by RMT TX and legacy TX)
+    void buildPocsagBitstream(uint32_t ric, uint8_t func, String msg, uint16_t baud, bool alpha,
+                              bool** outBits, size_t* outCount);
+
+#ifdef ESP32
+    // RMT RX
+    rmt_data_t* _rmt_rx_buf;
+    size_t _rmt_rx_sym_count;
+    bool _rmt_rx_reading;
+    void processRmtEdges();
+    
+    // RMT TX
+    void transmitRmt(uint32_t ric, uint8_t func, String msg, uint16_t baud, bool alpha);
+#endif
 };
 
 #endif

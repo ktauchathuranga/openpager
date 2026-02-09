@@ -1,7 +1,13 @@
 #include <OpenPager.h>
 
+// ---- Single Radio Mode (default) ----
 // CSN = Pin 15 (D8 on many ESP nodes), GDO0 = Pin 5 (D1)
 OpenPager pager(15, 5);
+
+// ---- Dual Radio Mode (optional) ----
+// Dedicated RX and TX CC1101 modules — RX never stops during TX.
+// OpenPager pager(CSN_RX, GDO0_RX, CSN_TX, GDO0_TX);
+// OpenPager pager(15, 5, 4, 2);
 
 void setup() {
     Serial.begin(115200);
