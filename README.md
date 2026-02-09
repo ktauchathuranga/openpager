@@ -117,6 +117,36 @@ void loop() {
 }
 ```
 
+### Deep Sleep Receive Example (ESP32)
+```cpp
+#include <OpenPager.h>
+
+OpenPager pager(15, 5);
+#define GDO2_PIN 4  // CC1101 GDO2 → ESP32 RTC GPIO
+
+void onMessage(OpenPagerMessage msg) {
+    Serial.printf("[RIC: %lu] %s\n", msg.ric, msg.text);
+}
+
+void setup() {
+    Serial.begin(115200);
+    if (OpenPager::wokeFromSleep()) Serial.println("Woke from deep sleep!");
+
+    pager.begin(433.920, 0);
+    pager.setCallback(onMessage);
+    pager.setWakePin(GDO2_PIN);   // Enable carrier-sense wakeup
+    pager.startReceive(0);
+}
+
+void loop() {
+    pager.loop();
+    pager.sleepAfterTimeout(30000);  // Sleep after 30s of silence
+}
+```
+
+> **Note:** GDO2 must be connected to an RTC-capable GPIO (0, 2, 4, 12-15, 25-27, 32-39).
+> The CC1101 stays in RX mode during deep sleep (~17mA). The ESP32 draws ~10µA.
+
 ## API Reference
 
 ### Constructor
@@ -158,6 +188,14 @@ OpenPager(uint8_t csn_rx, uint8_t gdo0_rx, uint8_t csn_tx, uint8_t gdo0_tx)   //
 | Method | Description |
 |--------|-------------|
 | `isDualRadio()` | Returns `true` if using dual CC1101 mode |
+
+### Deep Sleep Methods (ESP32 Only)
+| Method | Description |
+|--------|-------------|
+| `setWakePin(gdo2_pin)` | Configure CC1101 GDO2 for carrier-sense wakeup |
+| `sleep()` | Enter deep sleep (CC1101 stays in RX) |
+| `sleepAfterTimeout(ms)` | Auto-sleep after `ms` with no messages (default 30s) |
+| `wokeFromSleep()` | Static: returns `true` if woke from carrier sense |
 
 ### OpenPagerMessage Structure
 ```cpp
@@ -204,6 +242,14 @@ arduino-cli compile -u -p /dev/ttyUSB0 --fqbn esp8266:esp8266:generic \
 - Uses two CC1101 modules on the same SPI bus (different CSN pins)
 - RX radio is never interrupted during TX — true simultaneous operation
 - Single-radio mode remains fully backward compatible
+
+### Deep Sleep Mode (ESP32)
+- CC1101 GDO2 pin configured for **carrier sense** output
+- ESP32 enters deep sleep; CC1101 stays in RX mode (~17mA)
+- When a signal is detected on-frequency, GDO2 goes HIGH and wakes ESP32 via `ext0`
+- On wake, ESP32 reboots from `setup()` — call `begin()` and `startReceive()` again
+- Use `sleepAfterTimeout()` in `loop()` for automatic sleep/wake cycling
+- `wokeFromSleep()` lets you detect wake-from-carrier vs normal boot
 
 ### Limitations
 - Single radio mode: Cannot TX and RX simultaneously (half-duplex)
