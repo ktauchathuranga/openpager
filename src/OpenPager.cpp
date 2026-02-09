@@ -24,6 +24,9 @@ OpenPager::OpenPager(uint8_t csn_pin, uint8_t gdo0_pin) :
     _csn(csn_pin), _gdo0(gdo0_pin), _freq(433.920), _last_baud(0), _invert(false),
     _dual_mode(false), _csn_tx(0), _gdo0_tx(0), _saved_csn(0), _saved_gdo0(0),
     _tx_power(OPENPAGER_TX_POWER_MAX),
+#ifdef ESP32
+    _gdo2(0), _wake_enabled(false), _last_msg_time(0),
+#endif
     _rx_active(false), _rx_config_baud(1200),
     _decoder_count(0),
     _rx_head(0), _rx_tail(0), _rx_callback(nullptr), _debug_callback(nullptr),
@@ -40,6 +43,9 @@ OpenPager::OpenPager(uint8_t csn_rx, uint8_t gdo0_rx, uint8_t csn_tx, uint8_t gd
     _csn(csn_rx), _gdo0(gdo0_rx), _freq(433.920), _last_baud(0), _invert(false),
     _dual_mode(true), _csn_tx(csn_tx), _gdo0_tx(gdo0_tx), _saved_csn(0), _saved_gdo0(0),
     _tx_power(OPENPAGER_TX_POWER_MAX),
+#ifdef ESP32
+    _gdo2(0), _wake_enabled(false), _last_msg_time(0),
+#endif
     _rx_active(false), _rx_config_baud(1200),
     _decoder_count(0),
     _rx_head(0), _rx_tail(0), _rx_callback(nullptr), _debug_callback(nullptr),
@@ -387,7 +393,12 @@ void OpenPager::initCC1101RX(uint16_t baud) {
     
     uint32_t freq_reg = (uint32_t)((_freq * 65536.0) / 26.0);
 
+#ifdef ESP32
+    // IOCFG2: Carrier Sense (0x0E) if deep sleep wake enabled, else default (0x06)
+    writeReg(0x00, _wake_enabled ? 0x0E : 0x06);
+#else
     writeReg(0x00, 0x06);
+#endif
     writeReg(0x02, 0x0D);
     
     writeReg(0x06, 0xFF);
@@ -694,6 +705,70 @@ void OpenPager::buildPocsagBitstream(uint32_t ric, uint8_t func, String msg, uin
     
     *outBits = bits;
     *outCount = pos;
+}
+
+// ============== ESP32 Deep Sleep ==============
+
+void OpenPager::setWakePin(uint8_t gdo2_pin) {
+    _gdo2 = gdo2_pin;
+    _wake_enabled = true;
+    _last_msg_time = millis();
+    pinMode(_gdo2, INPUT);
+    
+    // If RX is already active, reconfigure IOCFG2 for carrier sense
+    if (_rx_active) {
+        writeReg(0x00, 0x0E); // IOCFG2 = Carrier Sense
+    }
+}
+
+void OpenPager::sleep() {
+    if (!_wake_enabled) return;
+    
+    // Stop RMT but keep CC1101 in RX mode (don't send SIDLE)
+    if (_rmt_rx_reading) {
+        rmtDeinit(_gdo0);
+        _rmt_rx_reading = false;
+    }
+    if (_rmt_rx_buf) {
+        delete[] _rmt_rx_buf;
+        _rmt_rx_buf = nullptr;
+    }
+    
+    // Delete decoders to free RAM (they'll be recreated on wake)
+    for (int i = 0; i < _decoder_count; i++) {
+        if (_decoders[i]) {
+            delete _decoders[i];
+            _decoders[i] = nullptr;
+        }
+    }
+    _decoder_count = 0;
+    _rx_active = false;
+    
+    // Configure ext0 wakeup: wake when GDO2 (carrier sense) goes HIGH
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)_gdo2, 1);
+    
+    // Enter deep sleep — CC1101 stays powered and in RX mode
+    esp_deep_sleep_start();
+    // Execution stops here. On wake, ESP32 reboots from setup().
+}
+
+bool OpenPager::sleepAfterTimeout(uint32_t timeout_ms) {
+    if (!_wake_enabled) return false;
+    
+    // Reset timer whenever a message is received
+    if (_rx_head != _rx_tail) {
+        _last_msg_time = millis();
+    }
+    
+    if (millis() - _last_msg_time >= timeout_ms) {
+        sleep();
+        return true; // Never actually reached (deep sleep reboots)
+    }
+    return false;
+}
+
+bool OpenPager::wokeFromSleep() {
+    return (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0);
 }
 
 #endif // ESP32

@@ -7,6 +7,7 @@
 
 #ifdef ESP32
 #include "esp32-hal-rmt.h"
+#include "esp_sleep.h"
 #endif
 
 // Receiver buffer size (max messages in queue)
@@ -70,6 +71,26 @@ public:
     // Query dual-radio mode
     bool isDualRadio() const { return _dual_mode; }
 
+#ifdef ESP32
+    // Deep Sleep API (ESP32 only)
+    // Configure GDO2 pin for carrier-sense wakeup from deep sleep.
+    // The CC1101 stays in RX mode while ESP32 sleeps.
+    // When a signal is detected, GDO2 goes HIGH and wakes the ESP32.
+    void setWakePin(uint8_t gdo2_pin);
+    
+    // Enter deep sleep. CC1101 remains in RX mode.
+    // ESP32 wakes when carrier sense triggers on GDO2.
+    // After waking, call begin() and startReceive() again.
+    void sleep();
+    
+    // Auto-sleep: enter deep sleep after `timeout_ms` of no received messages.
+    // Call this in loop(). Returns true if going to sleep.
+    bool sleepAfterTimeout(uint32_t timeout_ms = 30000);
+    
+    // Check if this boot was a wake from deep sleep (carrier sense)
+    static bool wokeFromSleep();
+#endif
+
 private:
     uint8_t _csn, _gdo0;
     float _freq;
@@ -85,6 +106,13 @@ private:
     
     // TX power
     uint8_t _tx_power;
+
+#ifdef ESP32
+    // Deep sleep
+    uint8_t _gdo2;
+    bool _wake_enabled;
+    uint32_t _last_msg_time;
+#endif
     
     // TX timing
     uint32_t _bit_start_us;
