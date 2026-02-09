@@ -1,0 +1,20 @@
+name: Validate Library Version and Create Release  
+
+on:  
+  pull_request:  
+    types: [opened, synchronize, reopened]  
+
+jobs:  
+  validate-and-release:  
+    runs-on: ubuntu-latest  
+    permissions:  
+      contents: write  
+      pull-requests: write  
+    steps:  
+      - name: Checkout Code  
+        uses: actions/checkout@v3  
+
+      - name: Arduino Library Deploy  
+        uses: ktauchathuranga/arduino-library-deploy@v2.2.9  
+        env:  
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  
