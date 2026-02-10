@@ -15,7 +15,7 @@ void setup() {
     
     // Initialize pager at 433.920 MHz, 1200 baud
     Serial.println("Initializing OpenPager...");
-    pager.begin(433.920, 1200);
+    pager.begin(433, 1200);
     
     // Set TX power (optional — defaults to max)
     // Available levels: OPENPAGER_TX_POWER_MIN   (-30 dBm)

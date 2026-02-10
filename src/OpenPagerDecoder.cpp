@@ -50,7 +50,7 @@ void OpenPagerDecoder::processEdgeData(const uint32_t* durations_us, const bool*
         }
     }
     
-    // Don't finalize here — message may span multiple RMT chunks.
+    // Don't finalize here — message may span multiple edge data chunks.
     // Finalization happens in processBatch() on IDLE codeword,
     // or via timeout in the polling process() path.
 }
