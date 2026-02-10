@@ -50,10 +50,9 @@ void OpenPagerDecoder::processEdgeData(const uint32_t* durations_us, const bool*
         }
     }
     
-    // Check message timeout after processing all edges
-    if (_in_message && _msg_cw_count > 0) {
-        finalizeMessage();
-    }
+    // Don't finalize here — message may span multiple edge data chunks.
+    // Finalization happens in processBatch() on IDLE codeword,
+    // or via timeout in the polling process() path.
 }
 
 void OpenPagerDecoder::process(uint32_t now, bool bit) {

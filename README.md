@@ -11,7 +11,7 @@ OpenPager is a high-precision POCSAG (pager) transceiver library for Arduino-com
 - **Auto-Baud**: Automatically detects and receives 512, 1200, and 2400 baud messages simultaneously
 - **Message Modes**: Alphanumeric (7-bit ASCII), Numeric (4-bit BCD), and Tone Only
 - **Dual Radio**: Optional second CC1101 for true simultaneous TX/RX (RX never stops during TX)
-- **ESP32 RMT**: Hardware-timed TX/RX via ESP32 RMT peripheral — no polling required
+- **Non-Blocking RX**: Hardware timer sampling on ESP32/ESP8266 — `loop()` timing is not critical
 - **TX Power Control**: Adjustable transmit power from -30 dBm to +10 dBm
 - **Receiver Features**:
   - Parallel decoding of multiple baud rates
@@ -83,7 +83,7 @@ void setup() {
 }
 
 void loop() {
-    pager.loop();  // On ESP32: timing not critical (RMT). On others: call ASAP.
+    pager.loop();  // On ESP32/ESP8266: timing not critical (hardware timer). On others: call ASAP.
 }
 ```
 
@@ -116,36 +116,6 @@ void loop() {
     }
 }
 ```
-
-### Deep Sleep Receive Example (ESP32)
-```cpp
-#include <OpenPager.h>
-
-OpenPager pager(15, 5);
-#define GDO2_PIN 4  // CC1101 GDO2 → ESP32 RTC GPIO
-
-void onMessage(OpenPagerMessage msg) {
-    Serial.printf("[RIC: %lu] %s\n", msg.ric, msg.text);
-}
-
-void setup() {
-    Serial.begin(115200);
-    if (OpenPager::wokeFromSleep()) Serial.println("Woke from deep sleep!");
-
-    pager.begin(433.920, 0);
-    pager.setCallback(onMessage);
-    pager.setWakePin(GDO2_PIN);   // Enable carrier-sense wakeup
-    pager.startReceive(0);
-}
-
-void loop() {
-    pager.loop();
-    pager.sleepAfterTimeout(30000);  // Sleep after 30s of silence
-}
-```
-
-> **Note:** GDO2 must be connected to an RTC-capable GPIO (0, 2, 4, 12-15, 25-27, 32-39).
-> The CC1101 stays in RX mode during deep sleep (~17mA). The ESP32 draws ~10µA.
 
 ## API Reference
 
@@ -189,14 +159,6 @@ OpenPager(uint8_t csn_rx, uint8_t gdo0_rx, uint8_t csn_tx, uint8_t gdo0_tx)   //
 |--------|-------------|
 | `isDualRadio()` | Returns `true` if using dual CC1101 mode |
 
-### Deep Sleep Methods (ESP32 Only)
-| Method | Description |
-|--------|-------------|
-| `setWakePin(gdo2_pin)` | Configure CC1101 GDO2 for carrier-sense wakeup |
-| `sleep()` | Enter deep sleep (CC1101 stays in RX) |
-| `sleepAfterTimeout(ms)` | Auto-sleep after `ms` with no messages (default 30s) |
-| `wokeFromSleep()` | Static: returns `true` if woke from carrier sense |
-
 ### OpenPagerMessage Structure
 ```cpp
 struct OpenPagerMessage {
@@ -232,24 +194,16 @@ arduino-cli compile -u -p /dev/ttyUSB0 --fqbn esp8266:esp8266:generic \
 - 32-bit sync word detection with automatic polarity handling
 - BCH(31,21) validation on each codeword
 
-### ESP32 RMT Hardware Acceleration
-- On ESP32, the RMT peripheral captures edges on GDO0 in hardware — no CPU polling needed
-- `loop()` only needs to check if a capture completed and process buffered edge data
-- TX uses RMT for hardware-timed bit output — perfect timing, no busy-wait
-- On non-ESP32 boards, the library falls back to `digitalRead()` polling (call `loop()` as fast as possible)
+### Non-Blocking RX (ESP32 & ESP8266)
+- A hardware timer ISR samples GDO0 at ~19.2 kHz into a ring buffer
+- `loop()` drains the buffer and feeds samples to decoders — timing is not critical
+- On ESP8266, Timer1 is used — `Servo` and `analogWrite()` are not available while receiving
+- On other platforms, the library falls back to `digitalRead()` polling (call `loop()` as fast as possible)
 
 ### Dual Radio Mode
 - Uses two CC1101 modules on the same SPI bus (different CSN pins)
 - RX radio is never interrupted during TX — true simultaneous operation
 - Single-radio mode remains fully backward compatible
-
-### Deep Sleep Mode (ESP32)
-- CC1101 GDO2 pin configured for **carrier sense** output
-- ESP32 enters deep sleep; CC1101 stays in RX mode (~17mA)
-- When a signal is detected on-frequency, GDO2 goes HIGH and wakes ESP32 via `ext0`
-- On wake, ESP32 reboots from `setup()` — call `begin()` and `startReceive()` again
-- Use `sleepAfterTimeout()` in `loop()` for automatic sleep/wake cycling
-- `wokeFromSleep()` lets you detect wake-from-carrier vs normal boot
 
 ### Limitations
 - Single radio mode: Cannot TX and RX simultaneously (half-duplex)
